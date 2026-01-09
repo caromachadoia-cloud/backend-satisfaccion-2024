@@ -2,7 +2,6 @@ const express = require('express');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const cors = require('cors');
-// YA NO NECESITAMOS CANVAS NI D3-CLOUD AQUÍ
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,20 +12,23 @@ app.use(express.json());
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
+// STOPWORDS (Palabras que ignoramos)
 const STOPWORDS = [
     'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como',
     'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde',
     'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola',
     'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'yyyy', 'todo', 
-    'nada', 'nadie', 'gente', 'cosas', 'porque', 'estan', 'estaba', 'fueron', 'tener', 'hace', 'falta'
+    'nada', 'nadie', 'gente', 'cosas', 'porque', 'estan', 'estaba', 'fueron', 'tener', 'hace', 'falta', 'mucha', 'mucho', 'poco', 'poca'
 ];
 
+// MEJORA: Regex que acepta tildes y ñ explícitamente
 function getWordsFromString(text) {
     if (!text || typeof text !== 'string') return [];
     return text.toLowerCase()
-        .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, "")
-        .replace(/\s{2,}/g, " ")
-        .match(/\b(\w+)\b/g)
+        // Reemplaza puntuación por espacios
+        .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ")
+        // Busca palabras incluyendo letras con tilde y ñ
+        .match(/[a-záéíóúñü]+/g)
         ?.filter(word => !STOPWORDS.includes(word) && word.length > 3) || [];
 }
 
@@ -49,7 +51,7 @@ function formatDateShort(date) {
 
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     try {
-        console.log("Procesando datos para frontend...");
+        console.log("Procesando datos masivos...");
         if (!req.file) return res.status(400).json({ success: false, message: 'Falta archivo' });
         
         let datosManuales = {};
@@ -71,7 +73,6 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             if (val.includes('comentario')) colMap.comentario = colNumber;
         });
 
-        // Fallback
         if (!colMap.calificacion) {
              worksheet.getRow(1).eachCell((cell, colNumber) => {
                  const val = cell.value?.toString().toLowerCase() || '';
@@ -135,24 +136,24 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
 
             if (calif.includes('muy positiva')) {
                 sMes.mp++; sUbic.mp++;
-                if (comment.length > 3) {
+                if (comment.length > 2) { // Bajamos el límite a 2 caracteres
                     sSector.palabrasPos.push(...getWordsFromString(comment));
                     sSector.listadoComentarios.positiva.push({ text: comment, date: fullDate });
                 }
             } else if (calif.includes('positiva')) {
                 sMes.p++; sUbic.p++;
-                if (comment.length > 3) sSector.palabrasPos.push(...getWordsFromString(comment));
+                if (comment.length > 2) sSector.palabrasPos.push(...getWordsFromString(comment));
             } else if (calif.includes('muy negativa')) {
                 sMes.mn++; sUbic.mn++;
                 if (hour >= 0 && hour < 24) { sSector.horasDetractoras[hour]++; sUbic.horas[hour]++; }
-                if (comment.length > 3) {
+                if (comment.length > 2) {
                     sSector.palabrasNeg.push(...getWordsFromString(comment));
                     sSector.listadoComentarios.negativa.push({ text: comment, date: fullDate });
                 }
             } else if (calif.includes('negativa')) {
                 sMes.n++; sUbic.n++;
                 if (hour >= 0 && hour < 24) { sSector.horasDetractoras[hour]++; sUbic.horas[hour]++; }
-                if (comment.length > 3) {
+                if (comment.length > 2) {
                     sSector.palabrasNeg.push(...getWordsFromString(comment));
                     sSector.listadoComentarios.negativa.push({ text: comment, date: fullDate });
                 }
@@ -185,10 +186,14 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 return { nombre: key, total: u.total, nps: calculateNPS(u.mp, u.p, u.n + u.mn), horaCritica: critH };
             }).sort((a,b) => b.nps - a.nps);
 
-            // CONTAR PALABRAS Y ENVIAR LISTA (NO IMAGEN)
             const contar = (arr) => Object.entries(arr.reduce((a,c)=>(a[c]=(a[c]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]);
-            const topPos = contar(data.palabrasPos).slice(0, 100); // Top 100 palabras
-            const topNeg = contar(data.palabrasNeg).slice(0, 100);
+            // ENVIAMOS MAS PALABRAS PARA QUE NO QUEDE VACIO
+            const topPos = contar(data.palabrasPos).slice(0, 150); 
+            const topNeg = contar(data.palabrasNeg).slice(0, 150);
+
+            // LOG PARA DEBUG EN RENDER
+            console.log(`Sector: ${nombre} - Palabras Negativas encontradas: ${topNeg.length}, Palabras Positivas encontradas: ${topPos.length}`);
+            if(topNeg.length > 0) console.log("Ejemplo Neg:", topNeg[0]);
 
             let maxGlob = 0, hGlob = null;
             data.horasDetractoras.forEach((c, h) => { if(c > maxGlob) { maxGlob = c; hGlob = h; } });
@@ -201,7 +206,6 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 nombre: nombre,
                 meses: mesesFinal,
                 ubicaciones: rankingUbicaciones,
-                // AHORA ENVIAMOS LISTAS, NO IMAGENES
                 listadoPalabrasPositivas: topPos,
                 listadoPalabrasNegativas: topNeg,
                 horaCritica: hGlob,
