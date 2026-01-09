@@ -12,11 +12,10 @@ app.use(express.json());
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// STOPWORDS ampliadas para limpiar mejor la nube
-const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'hola', 'gracias', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'atencion', 'servicio', 'estaba', 'esta', 'estuvo', 'fueron', 'tiene', 'tienen'];
+const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba', 'fueron', 'tener', 'hacia', 'todo', 'estuvo', 'estuvieron', 'esta', 'estos', 'para', 'pero', 'tenía', 'poco', 'nada', 'pueden', 'ser', 'solo'];
 
 function getWords(text) {
-    if (!text || text.length < 3) return [];
+    if (!text || text.length < 5) return [];
     return text.toLowerCase()
         .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ")
         .match(/[a-záéíóúñü]+/g)
@@ -47,67 +46,102 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
 
         worksheet.eachRow((row, rowNum) => {
             if (rowNum === 1) return;
-            const rating = parseInt(row.getCell(colMap.rating).value);
-            const dateVal = row.getCell(colMap.fecha).value;
-            if (!dateVal || isNaN(rating)) return;
+            try {
+                const rVal = row.getCell(colMap.rating).value;
+                const rating = parseInt(rVal);
+                const dateVal = row.getCell(colMap.fecha).value;
+                if (!dateVal || isNaN(rating)) return;
 
-            let date = (dateVal instanceof Date) ? dateVal : new Date(dateVal);
-            const sectorName = (row.getCell(colMap.sector).value || 'General').toString().trim();
-            const comment = (row.getCell(colMap.comentario).value || '').toString().trim();
+                let date = (dateVal instanceof Date) ? dateVal : new Date(dateVal);
+                const sectorName = (row.getCell(colMap.sector).value || 'General').toString().trim();
+                const ubicName = (row.getCell(colMap.ubicacion).value || 'General').toString().trim();
+                const comment = (row.getCell(colMap.comentario).value || '').toString().trim();
 
-            if (!sectorsData[sectorName]) {
-                sectorsData[sectorName] = {
-                    meses: Array.from({length: 12}, () => ({ mp:0, mn:0, total:0 })),
-                    palabrasPos: [], palabrasNeg: [], horasNeg: Array(24).fill(0), coms: {pos:[], neg:[]}
-                };
-            }
-
-            const s = sectorsData[sectorName];
-            const mesIdx = date.getMonth();
-            s.meses[mesIdx].total++;
-
-            if (rating >= 4) {
-                s.meses[mesIdx].mp++;
-                if (comment.length > 5) {
-                    s.palabrasPos.push(...getWords(comment));
-                    s.coms.pos.push({ texto: comment, date });
+                if (!sectorsData[sectorName]) {
+                    sectorsData[sectorName] = {
+                        meses: Array.from({length: 12}, () => ({ mp:0, p:0, n:0, mn:0, total:0 })),
+                        ubicaciones: {}, palabras4: [], palabras1: [], horasNeg: Array(24).fill(0),
+                        coms4: [], coms1: []
+                    };
                 }
-            } else if (rating <= 2) {
-                s.meses[mesIdx].mn++;
-                s.palabrasNeg.push(...getWords(comment));
-                s.coms.neg.push({ texto: comment, date });
-            }
+
+                const s = sectorsData[sectorName];
+                if (!s.ubicaciones[ubicName]) s.ubicaciones[ubicName] = { mp:0, p:0, n:0, mn:0, total:0, horas: Array(24).fill(0) };
+                
+                const statsMes = s.meses[date.getMonth()];
+                const statsUbic = s.ubicaciones[ubicName];
+                statsMes.total++; statsUbic.total++;
+
+                let hVal = row.getCell(colMap.hora).value;
+                let hour = (hVal instanceof Date) ? hVal.getUTCHours() : parseInt(hVal?.toString().split(':')[0]) || 12;
+
+                if (rating === 4) {
+                    statsMes.mp++; statsUbic.mp++;
+                    if (comment.length > 5) {
+                        s.palabras4.push(...getWords(comment));
+                        s.coms4.push({ texto: comment, len: comment.length, date });
+                    }
+                } else if (rating === 1) {
+                    statsMes.mn++; statsUbic.mn++;
+                    s.horasNeg[hour]++; statsUbic.horas[hour]++;
+                    if (comment.length > 5) {
+                        s.palabras1.push(...getWords(comment));
+                        s.coms1.push({ texto: comment, len: comment.length, date });
+                    }
+                } else if (rating === 2) { statsMes.n++; statsUbic.n++; }
+                else if (rating === 3) { statsMes.p++; statsUbic.p++; }
+
+            } catch (err) {}
         });
 
         const resultado = Object.entries(sectorsData).map(([nombre, data]) => {
-            // Inyectar datos manuales (Enero/Febrero)
             ['enero', 'febrero'].forEach((mes, i) => {
                 if (datosManuales[mes]) {
                     data.meses[i].mp = datosManuales[mes].muy_positivas || 0;
+                    data.meses[i].p = datosManuales[mes].positivas || 0;
+                    data.meses[i].n = datosManuales[mes].negativas || 0;
+                    data.meses[i].mn = datosManuales[mes].muy_negativas || 0;
                     data.meses[i].total = datosManuales[mes].total || 0;
                 }
             });
 
-            const contar = (arr) => {
+            const mesesFinal = data.meses.map((m, i) => ({
+                nombre: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'][i],
+                sat: m.total > 0 ? parseFloat((((m.mp + m.p - (m.n + m.mn)) / m.total) * 100).toFixed(1)) : 0,
+                total: m.total
+            }));
+
+            const ranking = Object.entries(data.ubicaciones).map(([key, u]) => {
+                let maxH = 0, hC = 0;
+                u.horas.forEach((c, h) => { if(c > maxH) { maxH = c; hC = h; } });
+                return { 
+                    nombre: key, 
+                    total: u.total, 
+                    sat: u.total > 0 ? parseFloat((((u.mp + u.p - (u.n + u.mn)) / u.total) * 100).toFixed(1)) : 0, 
+                    hCrit: hC 
+                };
+            }).sort((a,b) => b.sat - a.sat);
+
+            const contarTop = (arr) => {
                 let counts = {};
                 arr.forEach(w => counts[w] = (counts[w] || 0) + 1);
-                return Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0, 25);
+                return Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0, 30);
             };
 
+            const fmtComs = (arr) => arr.sort((a,b)=>b.len-a.len).slice(0,3).map(c=>({
+                texto: c.texto, 
+                meta: `${c.date.getUTCDate()}/${c.date.getUTCMonth()+1} ${c.date.getUTCHours()}:00hs`
+            }));
+
             return {
-                nombre,
-                meses: data.meses.map((m, i) => ({
-                    nombre: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'][i],
-                    sat: m.total > 0 ? ((m.mp / m.total) * 100).toFixed(1) : 0,
-                    total: m.total
-                })),
-                nubePos: contar(data.palabrasPos),
-                nubeNeg: contar(data.palabrasNeg),
-                comentarios: { 
-                    pos: data.coms.pos.slice(0, 3), 
-                    neg: data.coms.neg.slice(0, 3) 
-                },
-                satAnual: (data.meses.reduce((acc, m) => acc + (m.total > 0 ? (m.mp/m.total)*100 : 0), 0) / 12).toFixed(1)
+                nombre, 
+                meses: mesesFinal, 
+                ubicaciones: ranking,
+                nubePos: contarTop(data.palabras4), 
+                nubeNeg: contarTop(data.palabras1),
+                horaCritica: data.horasNeg.indexOf(Math.max(...data.horasNeg)),
+                comentarios: { pos: fmtComs(data.coms4), neg: fmtComs(data.coms1) },
+                satPromedio: (mesesFinal.reduce((s, m) => s + m.sat, 0) / 12).toFixed(1)
             };
         });
 
@@ -117,4 +151,4 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor Corriendo`));
