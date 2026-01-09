@@ -12,14 +12,8 @@ app.use(express.json());
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'fueron', 'tener', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba', 'todo'];
-
-function limpiarTexto(text) {
-    if (!text || text.length < 15) return null;
-    let limpio = text.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '');
-    if (/(.)\1{3,}/.test(limpio.toLowerCase())) return null; 
-    return limpio.trim();
-}
+// STOPWORDS ampliadas para limpiar la nube de "basura"
+const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'fueron', 'tener', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba', 'todo', 'esta', 'estos', 'ami', 'hacia', 'estuvo', 'estuvieron'];
 
 function getWords(text) {
     if (!text) return [];
@@ -59,7 +53,7 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             const sectorName = (row.getCell(colMap.sector).value || 'General').toString().trim();
             const ubicName = (row.getCell(colMap.ubicacion).value || 'General').toString().trim();
             const calif = (row.getCell(colMap.calificacion).value || '').toString().toLowerCase();
-            const rawComment = (row.getCell(colMap.comentario).value || '').toString();
+            const comment = (row.getCell(colMap.comentario).value || '').toString();
 
             if (!sectorsData[sectorName]) {
                 sectorsData[sectorName] = {
@@ -76,27 +70,23 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             const statsUbic = sSector.ubicaciones[ubicName];
             statsMes.total++; statsUbic.total++;
 
-            const cleanComment = limpiarTexto(rawComment);
-
             if (calif.includes('muy positiva')) {
                 statsMes.mp++; statsUbic.mp++;
-                if (cleanComment) {
-                    sSector.palabrasPos.push(...getWords(cleanComment));
-                    sSector.comentariosPos.push({ text: cleanComment, len: cleanComment.length, date });
+                if (comment.length > 10) {
+                    sSector.palabrasPos.push(...getWords(comment));
+                    sSector.comentariosPos.push({ text: comment, len: comment.length, date });
                 }
             } else if (calif.includes('negativa')) {
                 const isVery = calif.includes('muy');
                 isVery ? statsMes.mn++ : statsMes.n++;
                 isVery ? statsUbic.mn++ : statsUbic.n++;
-                
                 let hVal = row.getCell(colMap.hora).value;
                 let hour = (hVal instanceof Date) ? hVal.getUTCHours() : parseInt(hVal?.toString().split(':')[0]) || 12;
                 sSector.horasNeg[hour]++;
                 statsUbic.horas[hour]++;
-
-                if (cleanComment) {
-                    sSector.palabrasNeg.push(...getWords(cleanComment));
-                    sSector.comentariosNeg.push({ text: cleanComment, len: cleanComment.length, date });
+                if (comment.length > 10) {
+                    sSector.palabrasNeg.push(...getWords(comment));
+                    sSector.comentariosNeg.push({ text: comment, len: comment.length, date });
                 }
             }
         });
@@ -121,8 +111,7 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 return { nombre: key, total: u.total, sat: u.total > 0 ? parseFloat((((u.mp - (u.n + u.mn)) / u.total) * 100).toFixed(1)) : 0, horaCritica: hCrit };
             }).sort((a,b) => b.sat - a.sat);
 
-            const contar = (arr) => Object.entries(arr.reduce((a,c)=>(a[c]=(a[c]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 50);
-
+            const contar = (arr) => Object.entries(arr.reduce((a,c)=>(a[c]=(a[c]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 40);
             const fmtCom = (arr) => arr.sort((a,b)=>b.len-a.len).slice(0,3).map(c=>({texto: c.text, meta: `${c.date.getUTCDate()}/${c.date.getUTCMonth()+1} ${c.date.getUTCHours()}:${c.date.getUTCMinutes().toString().padStart(2,'0')}hs`}));
 
             return {
@@ -139,4 +128,4 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-app.listen(PORT, () => console.log(`Server running`));
+app.listen(PORT, () => console.log(`Server ON`));
