@@ -12,51 +12,52 @@ app.use(express.json());
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// STOPWORDS (Palabras que ignoramos)
-const STOPWORDS = [
-    'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como',
-    'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde',
-    'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola',
-    'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'yyyy', 'todo', 
-    'nada', 'nadie', 'gente', 'cosas', 'porque', 'estan', 'estaba', 'fueron', 'tener', 'hace', 'falta', 'mucha', 'mucho', 'poco', 'poca'
-];
+const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'yyyy', 'todo', 'nada', 'nadie', 'gente', 'fueron', 'tener', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba'];
 
-// MEJORA: Regex que acepta tildes y ñ explícitamente
+// --- FILTRO INTELIGENTE DE COMENTARIOS ---
+function limpiarYValidarComentario(text) {
+    if (!text || text.length < 15) return null; // Ignorar muy cortos
+    
+    // 1. Eliminar emojis y caracteres especiales raros
+    let limpio = text.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '');
+    
+    // 2. Detectar si es basura (ej: "aaaaaaaaaa" o "asdasdasdasd")
+    if (/(.)\1{3,}/.test(limpio.toLowerCase())) return null; // 4 letras iguales seguidas
+    
+    return limpio.trim();
+}
+
+function puntuarComentario(text, tipo) {
+    let score = text.length; // Base por longitud
+    const keysPos = ['atencion', 'amable', 'rapido', 'limpio', 'excelente', 'ayudo', 'recomiendo'];
+    const keysNeg = ['demora', 'sucio', 'espera', 'maquina', 'atencion', 'lento', 'olor', 'baño', 'caja'];
+    
+    const keywords = tipo === 'pos' ? keysPos : keysNeg;
+    keywords.forEach(key => {
+        if (text.toLowerCase().includes(key)) score += 50; // Bonus por palabra clave
+    });
+    return score;
+}
+
 function getWordsFromString(text) {
-    if (!text || typeof text !== 'string') return [];
+    if (!text) return [];
     return text.toLowerCase()
-        // Reemplaza puntuación por espacios
         .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ")
-        // Busca palabras incluyendo letras con tilde y ñ
         .match(/[a-záéíóúñü]+/g)
         ?.filter(word => !STOPWORDS.includes(word) && word.length > 3) || [];
 }
 
-function calculateNPS(promotores, pasivos, detractores) {
+function calculateSatisfaction(promotores, pasivos, detractores) {
     const total = promotores + pasivos + detractores;
     if (total === 0) return 0;
-    const nps = ((promotores - detractores) / total) * 100;
-    return parseFloat(nps.toFixed(1));
-}
-
-function formatDateShort(date) {
-    if (!date) return '';
-    const d = new Date(date);
-    const day = d.getUTCDate().toString().padStart(2, '0');
-    const month = (d.getUTCMonth() + 1).toString().padStart(2, '0');
-    const hours = d.getUTCHours().toString().padStart(2, '0');
-    const mins = d.getUTCMinutes().toString().padStart(2, '0');
-    return `${day}/${month} ${hours}:${mins}hs`;
+    return parseFloat((((promotores - detractores) / total) * 100).toFixed(1));
 }
 
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     try {
-        console.log("Procesando datos masivos...");
         if (!req.file) return res.status(400).json({ success: false, message: 'Falta archivo' });
         
-        let datosManuales = {};
-        try { datosManuales = JSON.parse(req.body.datosManuales || '{}'); } catch (e) {}
-
+        let datosManuales = JSON.parse(req.body.datosManuales || '{}');
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
         const worksheet = workbook.worksheets[0];
@@ -68,163 +69,121 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             if (val.includes('hora')) colMap.hora = colNumber;
             if (val.includes('sector')) colMap.sector = colNumber;
             if (val.includes('ubicacion')) colMap.ubicacion = colNumber;
-            if (val === 'calificacion_desc' || val === 'calificacion_descripcion') colMap.calificacion = colNumber;
-            else if (!colMap.calificacion && val.includes('calific') && val.includes('desc')) colMap.calificacion = colNumber;
+            if (val.includes('desc')) colMap.calificacion = colNumber;
             if (val.includes('comentario')) colMap.comentario = colNumber;
         });
-
-        if (!colMap.calificacion) {
-             worksheet.getRow(1).eachCell((cell, colNumber) => {
-                 const val = cell.value?.toString().toLowerCase() || '';
-                 if (val.includes('desc') && val.includes('calific')) colMap.calificacion = colNumber;
-             });
-        }
-
-        if (!colMap.fecha || !colMap.calificacion) return res.status(400).json({ success: false, message: 'Faltan columnas requeridas' });
 
         const sectorsData = {};
 
         worksheet.eachRow((row, rowNum) => {
             if (rowNum === 1) return;
-            const rawDate = row.getCell(colMap.fecha).value;
-            let date;
-            if (rawDate instanceof Date) date = rawDate;
-            else if (typeof rawDate === 'string') {
-                const parts = rawDate.split('/');
-                if(parts.length === 3) date = new Date(parts[2], parts[1]-1, parts[0]);
-            }
-            if (!date || isNaN(date.getTime())) return;
+            const dateVal = row.getCell(colMap.fecha).value;
+            let date = (dateVal instanceof Date) ? dateVal : new Date(dateVal);
+            if (isNaN(date.getTime())) return;
 
-            const monthIndex = date.getMonth(); 
-            const sectorName = colMap.sector ? (row.getCell(colMap.sector).value || 'General').toString().trim() : 'General';
-            const ubicacionName = colMap.ubicacion ? (row.getCell(colMap.ubicacion).value || 'General').toString().trim() : 'General';
-            const califVal = row.getCell(colMap.calificacion).value;
-            const calif = califVal ? califVal.toString().toLowerCase() : '';
-            const comment = colMap.comentario ? (row.getCell(colMap.comentario).value || '').toString().trim() : '';
-
-            let hour = 12;
-            let fullDate = new Date(date);
-            if (colMap.hora) {
-                const rawTime = row.getCell(colMap.hora).value;
-                if (rawTime instanceof Date) {
-                    hour = rawTime.getUTCHours();
-                    fullDate.setHours(hour, rawTime.getUTCMinutes());
-                } else if (typeof rawTime === 'string') {
-                    const parts = rawTime.split(':');
-                    if(parts.length > 0) hour = parseInt(parts[0]);
-                    fullDate.setHours(hour, parts[1] || 0);
-                }
-            }
+            const monthIndex = date.getMonth();
+            const sectorName = (row.getCell(colMap.sector).value || 'General').toString().trim();
+            const ubicName = (row.getCell(colMap.ubicacion).value || 'General').toString().trim();
+            const calif = (row.getCell(colMap.calificacion).value || '').toString().toLowerCase();
+            const rawComment = (row.getCell(colMap.comentario).value || '').toString();
 
             if (!sectorsData[sectorName]) {
                 sectorsData[sectorName] = {
                     meses: Array.from({length: 12}, () => ({ mp:0, p:0, n:0, mn:0, total:0 })),
                     ubicaciones: {},
-                    palabrasPos: [], palabrasNeg: [], horasDetractoras: Array(24).fill(0),
-                    listadoComentarios: { positiva: [], negativa: [] }
+                    palabrasPos: [], palabrasNeg: [], horasNeg: Array(24).fill(0),
+                    comentariosPos: [], comentariosNeg: []
                 };
             }
-            if (!sectorsData[sectorName].ubicaciones[ubicacionName]) {
-                sectorsData[sectorName].ubicaciones[ubicacionName] = { mp:0, p:0, n:0, mn:0, total:0, horas: Array(24).fill(0) };
+
+            if (!sectorsData[sectorName].ubicaciones[ubicName]) {
+                sectorsData[sectorName].ubicaciones[ubicName] = { mp:0, p:0, n:0, mn:0, total:0, horas: Array(24).fill(0) };
             }
 
             const sSector = sectorsData[sectorName];
-            const sMes = sSector.meses[monthIndex];
-            const sUbic = sSector.ubicaciones[ubicacionName];
+            const statsMes = sSector.meses[monthIndex];
+            const statsUbic = sSector.ubicaciones[ubicName];
 
-            sMes.total++; sUbic.total++;
+            statsMes.total++; statsUbic.total++;
+
+            // Procesar calificación y comentario
+            const cleanComment = limpiarYValidarComentario(rawComment);
 
             if (calif.includes('muy positiva')) {
-                sMes.mp++; sUbic.mp++;
-                if (comment.length > 2) { // Bajamos el límite a 2 caracteres
-                    sSector.palabrasPos.push(...getWordsFromString(comment));
-                    sSector.listadoComentarios.positiva.push({ text: comment, date: fullDate });
+                statsMes.mp++; statsUbic.mp++;
+                if (cleanComment) {
+                    sSector.palabrasPos.push(...getWordsFromString(cleanComment));
+                    sSector.comentariosPos.push({ text: cleanComment, score: puntuarComentario(cleanComment, 'pos'), date });
                 }
-            } else if (calif.includes('positiva')) {
-                sMes.p++; sUbic.p++;
-                if (comment.length > 2) sSector.palabrasPos.push(...getWordsFromString(comment));
-            } else if (calif.includes('muy negativa')) {
-                sMes.mn++; sUbic.mn++;
-                if (hour >= 0 && hour < 24) { sSector.horasDetractoras[hour]++; sUbic.horas[hour]++; }
-                if (comment.length > 2) {
-                    sSector.palabrasNeg.push(...getWordsFromString(comment));
-                    sSector.listadoComentarios.negativa.push({ text: comment, date: fullDate });
+            } else if (calif.includes('muy negativa') || calif.includes('negativa')) {
+                const isVeryNeg = calif.includes('muy');
+                isVeryNeg ? statsMes.mn++ : statsMes.n++;
+                isVeryNeg ? statsUbic.mn++ : statsUbic.n++;
+
+                let hour = 12;
+                if (colMap.hora) {
+                    const hVal = row.getCell(colMap.hora).value;
+                    hour = (hVal instanceof Date) ? hVal.getUTCHours() : parseInt(hVal?.toString().split(':')[0]) || 12;
                 }
-            } else if (calif.includes('negativa')) {
-                sMes.n++; sUbic.n++;
-                if (hour >= 0 && hour < 24) { sSector.horasDetractoras[hour]++; sUbic.horas[hour]++; }
-                if (comment.length > 2) {
-                    sSector.palabrasNeg.push(...getWordsFromString(comment));
-                    sSector.listadoComentarios.negativa.push({ text: comment, date: fullDate });
+                sSector.horasNeg[hour]++;
+                statsUbic.horas[hour]++;
+
+                if (cleanComment) {
+                    sSector.palabrasNeg.push(...getWordsFromString(cleanComment));
+                    sSector.comentariosNeg.push({ text: cleanComment, score: puntuarComentario(cleanComment, 'neg'), date });
                 }
             }
         });
 
-        const resultado = [];
-
-        for (const [nombre, data] of Object.entries(sectorsData)) {
-            // Unir Manuales
+        const resultado = Object.entries(sectorsData).map(([nombre, data]) => {
+            // Unir manuales
             ['enero', 'febrero'].forEach((mes, i) => {
                 if (datosManuales[mes]) {
                     data.meses[i].mp += datosManuales[mes].muy_positivas || 0;
-                    data.meses[i].p += datosManuales[mes].positivas || 0;
-                    data.meses[i].n += datosManuales[mes].negativas || 0;
-                    data.meses[i].mn += datosManuales[mes].muy_negativas || 0;
                     data.meses[i].total += datosManuales[mes].total || 0;
                 }
             });
 
             const mesesFinal = data.meses.map((m, i) => ({
                 nombre: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'][i],
-                nps: calculateNPS(m.mp, m.p, m.n + m.mn),
+                sat: calculateSatisfaction(m.mp, m.p, m.n + m.mn),
                 total: m.total
             }));
 
-            const rankingUbicaciones = Object.entries(data.ubicaciones).map(([key, u]) => {
-                let maxH = 0, critH = null;
-                u.horas.forEach((c, h) => { if(c > maxH) { maxH = c; critH = h; } });
-                return { nombre: key, total: u.total, nps: calculateNPS(u.mp, u.p, u.n + u.mn), horaCritica: critH };
-            }).sort((a,b) => b.nps - a.nps);
+            // Ranking Ubicaciones
+            const ranking = Object.entries(data.ubicaciones).map(([key, u]) => {
+                let maxH = 0, hCrit = 0;
+                u.horas.forEach((c, h) => { if(c > maxH) { maxH = c; hCrit = h; } });
+                return { nombre: key, total: u.total, sat: calculateSatisfaction(u.mp, u.p, u.n + u.mn), horaCritica: hCrit };
+            }).sort((a,b) => b.sat - a.sat);
 
-            const contar = (arr) => Object.entries(arr.reduce((a,c)=>(a[c]=(a[c]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]);
-            // ENVIAMOS MAS PALABRAS PARA QUE NO QUEDE VACIO
-            const topPos = contar(data.palabrasPos).slice(0, 150); 
-            const topNeg = contar(data.palabrasNeg).slice(0, 150);
-
-            // LOG PARA DEBUG EN RENDER
-            console.log(`Sector: ${nombre} - Palabras Negativas encontradas: ${topNeg.length}, Palabras Positivas encontradas: ${topPos.length}`);
-            if(topNeg.length > 0) console.log("Ejemplo Neg:", topNeg[0]);
-
-            let maxGlob = 0, hGlob = null;
-            data.horasDetractoras.forEach((c, h) => { if(c > maxGlob) { maxGlob = c; hGlob = h; } });
-
-            const sortComments = (arr) => arr.sort((a, b) => b.text.length - a.text.length).slice(0, 3).map(c => ({
-                texto: c.text, fecha: formatDateShort(c.date)
+            // Mejores comentarios (Top 3 por score)
+            const getTop = (arr) => arr.sort((a,b) => b.score - a.score).slice(0, 3).map(c => ({
+                texto: c.text, 
+                meta: `${c.date.getUTCDate()}/${c.date.getUTCMonth()+1} ${c.date.getUTCHours()}:${c.date.getUTCMinutes().toString().padStart(2,'0')}hs`
             }));
 
-            resultado.push({
-                nombre: nombre,
-                meses: mesesFinal,
-                ubicaciones: rankingUbicaciones,
-                listadoPalabrasPositivas: topPos,
-                listadoPalabrasNegativas: topNeg,
-                horaCritica: hGlob,
-                palabrasNegativas: topNeg.slice(0, 5).map(x => x[0]),
-                comentariosReales: {
-                    positivos: sortComments(data.listadoComentarios.positiva),
-                    negativos: sortComments(data.listadoComentarios.negativa)
-                },
+            // Palabras para nube (limitado a top 60 para evitar amontonamiento)
+            const contar = (arr) => Object.entries(arr.reduce((a,c)=>(a[c]=(a[c]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 60);
+
+            let maxG = 0, hG = 0;
+            data.horasNeg.forEach((c, h) => { if(c > maxG) { maxG = c; hG = h; } });
+
+            return {
+                nombre, meses: mesesFinal, ubicaciones: ranking,
+                palabrasPos: contar(data.palabrasPos),
+                palabrasNeg: contar(data.palabrasNeg),
+                horaCritica: hG,
+                comentarios: { pos: getTop(data.comentariosPos), neg: getTop(data.comentariosNeg) },
                 totalAnual: data.meses.reduce((s, m) => s + m.total, 0),
-                npsPromedio: (mesesFinal.reduce((s, m) => s + m.nps, 0) / 12).toFixed(1)
-            });
-        }
+                satPromedio: (mesesFinal.reduce((s, m) => s + m.sat, 0) / 12).toFixed(1)
+            };
+        });
 
         res.json({ success: true, data: { sectores: resultado } });
     } catch (e) {
-        console.error(e);
         res.status(500).json({ success: false, message: e.message });
     }
 });
 
-app.get('/health', (req, res) => res.send('OK'));
 app.listen(PORT, () => console.log(`Server running on ${PORT}`));
