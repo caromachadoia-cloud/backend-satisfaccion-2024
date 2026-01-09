@@ -4,34 +4,29 @@ const ExcelJS = require('exceljs');
 const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 10000; // Render usa el 10000 por defecto
+const PORT = process.env.PORT || 10000;
 
-app.use(cors()); // Permitir todas las peticiones
+app.use(cors());
 app.use(express.json());
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'tener', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba', 'fueron', 'hacia'];
+const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba', 'fueron', 'tener', 'hacia', 'todo', 'estuvo', 'estuvieron', 'esta', 'estos', 'para', 'pero'];
 
 function getWords(text) {
-    if (!text || typeof text !== 'string') return [];
+    if (!text || text.length < 5) return [];
     return text.toLowerCase()
         .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ")
         .match(/[a-záéíóúñü]+/g)
         ?.filter(word => !STOPWORDS.includes(word) && word.length > 3) || [];
 }
 
-// RUTA CORREGIDA: Asegúrate que sea /procesar-anual
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     try {
-        if (!req.file) return res.status(400).json({ success: false, message: 'No se recibió el archivo Excel.' });
+        if (!req.file) return res.status(400).json({ success: false, message: 'No se recibió archivo' });
 
-        let datosManuales = {};
-        try {
-            datosManuales = JSON.parse(req.body.datosManuales || '{}');
-        } catch (e) { console.error("Error parseando datos manuales"); }
-
+        let datosManuales = JSON.parse(req.body.datosManuales || '{}');
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
         const worksheet = workbook.worksheets[0];
@@ -43,7 +38,7 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             if (val.includes('hora')) colMap.hora = colNumber;
             if (val.includes('sector')) colMap.sector = colNumber;
             if (val.includes('ubicacion')) colMap.ubicacion = colNumber;
-            if (val.includes('calificacion') && !val.includes('desc')) colMap.val = colNumber; 
+            if (val.includes('calificacion') && !val.includes('desc')) colMap.rating = colNumber; // Columna G (números)
             if (val.includes('comentario')) colMap.comentario = colNumber;
         });
 
@@ -52,20 +47,21 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
         worksheet.eachRow((row, rowNum) => {
             if (rowNum === 1) return;
             try {
-                const rating = parseInt(row.getCell(colMap.val)?.value);
-                const dateVal = row.getCell(colMap.fecha)?.value;
+                const rVal = row.getCell(colMap.rating).value;
+                const rating = parseInt(rVal);
+                const dateVal = row.getCell(colMap.fecha).value;
                 if (!dateVal || isNaN(rating)) return;
 
                 let date = (dateVal instanceof Date) ? dateVal : new Date(dateVal);
-                const sectorName = (row.getCell(colMap.sector)?.value || 'General').toString().trim();
-                const ubicName = (row.getCell(colMap.ubicacion)?.value || 'General').toString().trim();
-                const comment = (row.getCell(colMap.comentario)?.value || '').toString().trim();
+                const sectorName = (row.getCell(colMap.sector).value || 'General').toString().trim();
+                const ubicName = (row.getCell(colMap.ubicacion).value || 'General').toString().trim();
+                const comment = (row.getCell(colMap.comentario).value || '').toString().trim();
 
                 if (!sectorsData[sectorName]) {
                     sectorsData[sectorName] = {
                         meses: Array.from({length: 12}, () => ({ mp:0, p:0, n:0, mn:0, total:0 })),
-                        ubicaciones: {}, palabrasPorNota: { 1: [], 2: [], 3: [], 4: [] },
-                        horasNeg: Array(24).fill(0), comsPos: [], comsNeg: []
+                        ubicaciones: {}, palabras4: [], palabras1: [], horasNeg: Array(24).fill(0),
+                        coms4: [], coms1: []
                     };
                 }
 
@@ -76,22 +72,24 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 const statsUbic = s.ubicaciones[ubicName];
                 statsMes.total++; statsUbic.total++;
 
-                if (rating >= 3) {
-                    rating === 4 ? statsMes.mp++ : statsMes.p++;
-                    rating === 4 ? statsUbic.mp++ : statsUbic.p++;
-                    getWords(comment).forEach(w => s.palabrasPorNota[rating].push(w));
-                    if (comment.length > 20 && rating === 4) s.comsPos.push({ texto: comment, len: comment.length, date });
-                } else {
-                    rating === 1 ? statsMes.mn++ : statsMes.n++;
-                    rating === 1 ? statsUbic.mn++ : statsUbic.n++;
-                    getWords(comment).forEach(w => s.palabrasPorNota[rating].push(w));
-                    
-                    let hVal = row.getCell(colMap.hora)?.value;
-                    let hour = (hVal instanceof Date) ? hVal.getUTCHours() : parseInt(hVal?.toString().split(':')[0]) || 12;
+                let hVal = row.getCell(colMap.hora).value;
+                let hour = (hVal instanceof Date) ? hVal.getUTCHours() : parseInt(hVal?.toString().split(':')[0]) || 12;
+
+                if (rating === 4) {
+                    statsMes.mp++; statsUbic.mp++;
+                    if (comment.length > 10) {
+                        s.palabras4.push(...getWords(comment));
+                        s.coms4.push({ texto: comment, len: comment.length, date });
+                    }
+                } else if (rating === 1) {
+                    statsMes.mn++; statsUbic.mn++;
                     s.horasNeg[hour]++; statsUbic.horas[hour]++;
-                    if (comment.length > 20 && rating === 1) s.comsNeg.push({ texto: comment, len: comment.length, date });
+                    if (comment.length > 10) {
+                        s.palabras1.push(...getWords(comment));
+                        s.coms1.push({ texto: comment, len: comment.length, date });
+                    }
                 }
-            } catch (errRow) { /* Ignorar fila con error */ }
+            } catch (err) {}
         });
 
         const resultado = Object.entries(sectorsData).map(([nombre, data]) => {
@@ -108,39 +106,34 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 total: m.total
             }));
 
-            const procesarPalabras = (notas) => {
-                let conteo = {};
-                notas.forEach(n => {
-                    data.palabrasPorNota[n].forEach(w => {
-                        if (!conteo[w]) conteo[w] = { freq: 0, nota: n };
-                        conteo[w].freq++;
-                    });
-                });
-                return Object.entries(conteo).map(([word, info]) => [word, info.freq, info.nota]).sort((a, b) => b[1] - a[1]).slice(0, 30);
-            };
-
             const ranking = Object.entries(data.ubicaciones).map(([key, u]) => {
                 let maxH = 0, hC = 0;
                 u.horas.forEach((c, h) => { if(c > maxH) { maxH = c; hC = h; } });
                 return { nombre: key, total: u.total, sat: u.total > 0 ? parseFloat((((u.mp - (u.n + u.mn)) / u.total) * 100).toFixed(1)) : 0, hCrit: hC };
             }).sort((a,b) => b.sat - a.sat);
 
-            const fmt = (arr) => arr.sort((a,b)=>b.len-a.len).slice(0,3).map(c=>({texto: c.texto, meta: `${c.date.getUTCDate()}/${c.date.getUTCMonth()+1} ${c.date.getUTCHours()}:00hs`}));
+            const contarTop20 = (arr) => {
+                let counts = {};
+                arr.forEach(w => counts[w] = (counts[w] || 0) + 1);
+                return Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0, 20);
+            };
+
+            const fmtComs = (arr) => arr.sort((a,b)=>b.len-a.len).slice(0,3).map(c=>({texto: c.texto, meta: `${c.date.getUTCDate()}/${c.date.getUTCMonth()+1} ${c.date.getUTCHours()}:00hs`}));
 
             return {
                 nombre, meses: mesesFinal, ubicaciones: ranking,
-                nubePos: procesarPalabras([3, 4]), nubeNeg: procesarPalabras([1, 2]),
+                nubePos: contarTop20(data.palabras4), nubeNeg: contarTop20(data.palabras1),
                 horaCritica: data.horasNeg.indexOf(Math.max(...data.horasNeg)),
-                comentarios: { pos: fmt(data.comsPos), neg: fmt(data.comsNeg) },
+                comentarios: { pos: fmtComs(data.coms4), neg: fmtComs(data.coms1) },
                 satPromedio: (mesesFinal.reduce((s, m) => s + m.sat, 0) / 12).toFixed(1)
             };
         });
 
         res.json({ success: true, data: { sectores: resultado } });
-    } catch (error) {
-        console.error("Error Crítico:", error);
-        res.status(500).json({ success: false, message: 'Error interno: ' + error.message });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ success: false, message: e.message });
     }
 });
 
-app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Server running`));
