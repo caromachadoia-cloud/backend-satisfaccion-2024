@@ -2,8 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const cors = require('cors');
-const { createCanvas } = require('canvas');
-const d3Cloud = require('d3-cloud');
+// YA NO NECESITAMOS CANVAS NI D3-CLOUD AQUÍ
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,7 +18,7 @@ const STOPWORDS = [
     'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde',
     'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola',
     'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'yyyy', 'todo', 
-    'nada', 'nadie', 'gente', 'cosas', 'porque', 'estan', 'estaba', 'fueron', 'tener'
+    'nada', 'nadie', 'gente', 'cosas', 'porque', 'estan', 'estaba', 'fueron', 'tener', 'hace', 'falta'
 ];
 
 function getWordsFromString(text) {
@@ -48,63 +47,9 @@ function formatDateShort(date) {
     return `${day}/${month} ${hours}:${mins}hs`;
 }
 
-// GENERADOR DE NUBE CORREGIDO (FONDO BLANCO + ALTA RESOLUCIÓN)
-function generarNubeImagen(wordList, colorHex) {
-    if (!wordList || wordList.length === 0) return Promise.resolve(null);
-    
-    return new Promise(resolve => {
-        const width = 1000; 
-        const height = 600; 
-        const canvas = createCanvas(width, height);
-        const ctx = canvas.getContext('2d');
-        
-        // Normalizar tamaños
-        const maxWeight = Math.max(...wordList.map(w => w[1]));
-        const minWeight = Math.min(...wordList.map(w => w[1]));
-        
-        const words = wordList.slice(0, 80).map(item => ({
-            text: item[0],
-            size: 25 + 85 * ((item[1] - minWeight) / ((maxWeight - minWeight) || 1))
-        }));
-
-        d3Cloud()
-            .size([width, height])
-            .canvas(() => createCanvas(1, 1))
-            .words(words)
-            .padding(10)
-            .rotate(() => 0) 
-            .font('sans-serif')
-            .fontSize(d => d.size)
-            .on('end', (drawnWords) => {
-                // 1. Resetear transformación
-                ctx.setTransform(1, 0, 0, 1, 0, 0);
-                
-                // 2. PINTAR FONDO BLANCO (Soluciona el cuadro negro)
-                ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, width, height);
-                
-                // 3. Mover al centro
-                ctx.translate(width / 2, height / 2);
-                
-                drawnWords.forEach(w => {
-                    ctx.save();
-                    ctx.translate(w.x, w.y);
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillStyle = colorHex;
-                    ctx.font = `bold ${w.size}px sans-serif`;
-                    ctx.fillText(w.text, 0, 0);
-                    ctx.restore();
-                });
-                resolve(canvas.toDataURL().split(',')[1]);
-            })
-            .start();
-    });
-}
-
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     try {
-        console.log("Procesando solicitud...");
+        console.log("Procesando datos para frontend...");
         if (!req.file) return res.status(400).json({ success: false, message: 'Falta archivo' });
         
         let datosManuales = {};
@@ -134,7 +79,7 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
              });
         }
 
-        if (!colMap.fecha || !colMap.calificacion) return res.status(400).json({ success: false, message: 'Columnas requeridas no encontradas' });
+        if (!colMap.fecha || !colMap.calificacion) return res.status(400).json({ success: false, message: 'Faltan columnas requeridas' });
 
         const sectorsData = {};
 
@@ -152,12 +97,10 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             const monthIndex = date.getMonth(); 
             const sectorName = colMap.sector ? (row.getCell(colMap.sector).value || 'General').toString().trim() : 'General';
             const ubicacionName = colMap.ubicacion ? (row.getCell(colMap.ubicacion).value || 'General').toString().trim() : 'General';
-            
             const califVal = row.getCell(colMap.calificacion).value;
             const calif = califVal ? califVal.toString().toLowerCase() : '';
             const comment = colMap.comentario ? (row.getCell(colMap.comentario).value || '').toString().trim() : '';
 
-            // Hora y Fecha Completa
             let hour = 12;
             let fullDate = new Date(date);
             if (colMap.hora) {
@@ -172,7 +115,6 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 }
             }
 
-            // Inicializar Estructuras
             if (!sectorsData[sectorName]) {
                 sectorsData[sectorName] = {
                     meses: Array.from({length: 12}, () => ({ mp:0, p:0, n:0, mn:0, total:0 })),
@@ -237,23 +179,20 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 total: m.total
             }));
 
-            // Ranking Ubicaciones
             const rankingUbicaciones = Object.entries(data.ubicaciones).map(([key, u]) => {
                 let maxH = 0, critH = null;
                 u.horas.forEach((c, h) => { if(c > maxH) { maxH = c; critH = h; } });
                 return { nombre: key, total: u.total, nps: calculateNPS(u.mp, u.p, u.n + u.mn), horaCritica: critH };
             }).sort((a,b) => b.nps - a.nps);
 
-            // Nubes de Palabras
+            // CONTAR PALABRAS Y ENVIAR LISTA (NO IMAGEN)
             const contar = (arr) => Object.entries(arr.reduce((a,c)=>(a[c]=(a[c]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]);
-            const imgPos = await generarNubeImagen(contar(data.palabrasPos), '#2e7d32');
-            const imgNeg = await generarNubeImagen(contar(data.palabrasNeg), '#c62828');
+            const topPos = contar(data.palabrasPos).slice(0, 100); // Top 100 palabras
+            const topNeg = contar(data.palabrasNeg).slice(0, 100);
 
-            // Hora crítica global
             let maxGlob = 0, hGlob = null;
             data.horasDetractoras.forEach((c, h) => { if(c > maxGlob) { maxGlob = c; hGlob = h; } });
 
-            // Ordenar comentarios por longitud (mayor relevancia) y tomar top 3
             const sortComments = (arr) => arr.sort((a, b) => b.text.length - a.text.length).slice(0, 3).map(c => ({
                 texto: c.text, fecha: formatDateShort(c.date)
             }));
@@ -262,10 +201,11 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 nombre: nombre,
                 meses: mesesFinal,
                 ubicaciones: rankingUbicaciones,
-                nubePositivaB64: imgPos,
-                nubeNegativaB64: imgNeg,
+                // AHORA ENVIAMOS LISTAS, NO IMAGENES
+                listadoPalabrasPositivas: topPos,
+                listadoPalabrasNegativas: topNeg,
                 horaCritica: hGlob,
-                palabrasNegativas: contar(data.palabrasNeg).slice(0, 5).map(x => x[0]),
+                palabrasNegativas: topNeg.slice(0, 5).map(x => x[0]),
                 comentariosReales: {
                     positivos: sortComments(data.listadoComentarios.positiva),
                     negativos: sortComments(data.listadoComentarios.negativa)
