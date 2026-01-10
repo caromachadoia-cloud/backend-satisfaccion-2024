@@ -12,30 +12,31 @@ app.use(express.json());
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// DICCIONARIO PARA ANÁLISIS INTELIGENTE
+// DICCIONARIO PARA FILTRADO INTELIGENTE
 const CONTEXTO_SECTORES = {
-    "atencion": ["atencion", "trato", "amable", "ayudo", "atenta", "chica", "chico", "resolvio", "espera", "tarjeta", "fun"],
-    "gastro": ["comida", "mozo", "frio", "caliente", "rico", "bebida", "mesa", "pedido", "tardo"],
-    "cajas": ["pago", "cobro", "fila", "rapido", "dinero", "efectivo", "tarjeta", "atencion", "espera", "cajero"],
-    "traslados": ["chofer", "auto", "camioneta", "viaje", "llego", "tarde", "limpio", "conduccion", "carrito"],
-    "baños": ["lugar", "instalaciones", "baño", "limpieza", "seguridad", "olor", "jabon", "papel"]
+    "atencion": ["atencion", "trato", "amable", "ayudo", "atenta", "chica", "chico", "resolvio", "espera", "tarjeta", "fun", "stand"],
+    "gastro": ["comida", "mozo", "frio", "caliente", "rico", "bebida", "mesa", "pedido", "tardo", "restaurant", "confiteria", "hamburguesa", "menu"],
+    "cajas": ["pago", "cobro", "fila", "rapido", "dinero", "efectivo", "tarjeta", "atencion", "espera", "cajero", "ticket", "cobrar"],
+    "traslados": ["chofer", "auto", "camioneta", "viaje", "llego", "tarde", "limpio", "conduccion", "carrito", "transporte", "valet"],
+    "baños": ["baño", "limpieza", "olor", "jabon", "papel", "sucio", "higienico", "sanitario"]
 };
 
-function esComentarioRelevante(texto, sector) {
+const PROHIBIDAS_POR_RUIDO = ["maquina", "paga", "premio", "suerte", "ruleta", "slot", "ganar"];
+
+function esComentarioValido(texto, sector) {
     if (!texto || texto.length < 20) return false;
     const limpio = texto.toLowerCase();
     const sectorKey = Object.keys(CONTEXTO_SECTORES).find(k => sector.toLowerCase().includes(k)) || "general";
     
-    // Si no es el sector de máquinas, prohibimos palabras de máquinas para evitar ruido
-    const palabrasProhibidas = ["maquina", "paga", "premio", "suerte", "ruleta", "slot"];
-    if (sectorKey !== "general" && palabrasProhibidas.some(p => limpio.includes(p))) return false;
+    // Si no es el sector de máquinas/casino, prohibimos palabras de máquinas para evitar quejas cruzadas
+    if (sectorKey !== "general" && PROHIBIDAS_POR_RUIDO.some(p => limpio.includes(p))) return false;
 
-    // Debe tener al menos algo de contexto del sector
-    const contexto = CONTEXTO_SECTORES[sectorKey] || [];
-    return contexto.some(p => limpio.includes(p)) || sectorKey === "general";
+    // El comentario debe tener algo que ver con su sector
+    const palabrasContexto = CONTEXTO_SECTORES[sectorKey] || [];
+    return palabrasContexto.some(p => limpio.includes(p)) || sectorKey === "general";
 }
 
-function getWords(text) {
+function extractWords(text) {
     const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué'];
     return text.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ").match(/[a-záéíóúñü]+/g)
         ?.filter(word => !STOPWORDS.includes(word) && word.length > 3) || [];
@@ -43,7 +44,7 @@ function getWords(text) {
 
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     try {
-        if (!req.file) return res.status(400).json({ success: false, message: 'Falta archivo' });
+        if (!req.file) return res.status(400).json({ success: false, message: 'Archivo no recibido' });
         let manual = JSON.parse(req.body.datosManuales || '{}');
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
@@ -68,82 +69,80 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             const dateVal = row.getCell(colMap.fecha)?.value;
             if (!dateVal || isNaN(rating)) return;
 
+            // Hora con soporte para todos los formatos de Excel
             let hVal = row.getCell(colMap.hora)?.value;
             let horaReal = (hVal instanceof Date) ? hVal.getHours() : (typeof hVal === 'number' ? Math.floor(hVal * 24) : 12);
             let date = (dateVal instanceof Date) ? dateVal : new Date(dateVal);
             
-            const sector = (row.getCell(colMap.sector)?.value || 'General').toString().trim();
-            const ubic = (row.getCell(colMap.ubicacion)?.value || 'General').toString().trim();
+            const sectorName = (row.getCell(colMap.sector)?.value || 'General').toString().trim();
+            const ubicName = (row.getCell(colMap.ubicacion)?.value || 'General').toString().trim();
             const comment = (row.getCell(colMap.comentario)?.value || '').toString().trim();
 
-            if (!sectores[sector]) {
-                sectores[sector] = {
+            if (!sectores[sectorName]) {
+                sectores[sectorName] = {
                     meses: Array.from({length: 12}, () => ({ mp:0, p:0, n:0, mn:0, total:0 })),
                     statsHoras: Array.from({length: 24}, () => ({ total: 0, neg: 0 })),
                     ubicaciones: {}, comsPos: [], comsNeg: [], palabrasPos: [], palabrasNeg: []
                 };
             }
 
-            const s = sectores[sector];
+            const s = sectores[sectorName];
             const mIdx = date.getMonth();
             s.meses[mIdx].total++;
             s.statsHoras[horaReal].total++;
 
-            if (!s.ubicaciones[ubic]) s.ubicaciones[ubic] = { mp:0, p:0, n:0, mn:0, total:0 };
-            s.ubicaciones[ubic].total++;
+            if (!s.ubicaciones[ubicName]) s.ubicaciones[ubicName] = { mp:0, p:0, n:0, mn:0, total:0 };
+            s.ubicaciones[ubicName].total++;
 
-            if (rating === 4) { s.meses[mIdx].mp++; s.ubicaciones[ubic].mp++; }
-            if (rating === 3) { s.meses[mIdx].p++; s.ubicaciones[ubic].p++; }
-            if (rating === 2) { s.meses[mIdx].n++; s.ubicaciones[ubic].n++; s.statsHoras[horaReal].neg++; }
-            if (rating === 1) { s.meses[mIdx].mn++; s.ubicaciones[ubic].mn++; s.statsHoras[horaReal].neg++; }
+            if (rating === 4) { s.meses[mIdx].mp++; s.ubicaciones[ubicName].mp++; }
+            if (rating === 3) { s.meses[mIdx].p++; s.ubicaciones[ubicName].p++; }
+            if (rating === 2) { s.meses[mIdx].n++; s.ubicaciones[ubicName].n++; s.statsHoras[horaReal].neg++; }
+            if (rating === 1) { s.meses[mIdx].mn++; s.ubicaciones[ubicName].mn++; s.statsHoras[horaReal].neg++; }
 
-            if (esComentarioRelevante(comment, sector)) {
+            if (esComentarioValido(comment, sectorName)) {
                 const info = { texto: comment, meta: `${date.getDate()}/${date.getMonth()+1} ${horaReal}:00hs` };
-                if (rating >= 3) { s.comsPos.push(info); s.palabrasPos.push(...getWords(comment)); }
-                else { s.comsNeg.push(info); s.palabrasNeg.push(...getWords(comment)); }
+                if (rating >= 3) { s.comsPos.push(info); s.palabrasPos.push(...extractWords(comment)); }
+                else { s.comsNeg.push(info); s.palabrasNeg.push(...extractWords(comment)); }
             }
         });
 
         const final = Object.entries(sectores).map(([nombre, data]) => {
             ['enero', 'febrero'].forEach((m, i) => { if (manual[m]) data.meses[i] = manual[m]; });
 
-            let sumaSat = 0, mesesConData = 0;
+            let sumaSat = 0, mesesConDato = 0;
             const mesesFinal = data.meses.map((m) => {
                 const factor = m.total / 100;
-                // FORMULA EXACTA: (E / A%) - ((B-C) / A%)
+                // FORMULA SOLICITADA: (E/A%) - ((B-C)/A%)
                 const val = m.total > 0 ? ( (m.mp / factor) - ((m.mn - m.n) / factor) ) : 0;
-                if (m.total > 0) { sumaSat += val; mesesConData++; }
+                if (m.total > 0) { sumaSat += val; mesesConDato++; }
                 return { sat: parseFloat(val.toFixed(1)), total: m.total };
             });
 
-            let hCritica = "00:00"; let maxRate = -1; let porc = 0;
+            let hCritica = "12:00"; let maxRate = -1; let porcNeg = 0;
             data.statsHoras.forEach((h, i) => {
                 if (h.total >= 5) {
                     const rate = (h.neg / h.total) * 100;
-                    if (rate > maxRate) { maxRate = rate; hCritica = i.toString().padStart(2, '0') + ':00'; porc = rate.toFixed(1); }
+                    if (rate > maxRate) { maxRate = rate; hCritica = i.toString().padStart(2, '0') + ':00'; porcNeg = rate.toFixed(1); }
                 }
             });
 
-            const rankingUbic = Object.entries(data.ubicaciones).map(([uN, uD]) => {
+            const metricsUbic = Object.entries(data.ubicaciones).map(([uNom, uD]) => {
                 const f = uD.total / 100;
-                return { 
-                    nombre: uN, total: uD.total, 
-                    sat: uD.total > 0 ? ((uD.mp/f) - ((uD.mn - uD.n)/f)).toFixed(1) : 0,
-                    promDiario: (uD.total / 365).toFixed(2)
-                };
-            }).sort((a,b) => b.total - a.total);
+                const uSat = uD.total > 0 ? ((uD.mp/f) - ((uD.mn - uD.n)/f)).toFixed(1) : 0;
+                return { nombre: uNom, totalAnual: uD.total, satProm: uSat, promDiario: (uD.total / 365).toFixed(2) };
+            }).sort((a,b) => b.totalAnual - a.totalAnual);
 
-            const getFreq = (arr) => Object.entries(arr.reduce((a,w)=>(a[w]=(a[w]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 30);
+            const freq = (arr) => Object.entries(arr.reduce((a,w)=>(a[w]=(a[w]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 30);
 
             return {
-                nombre, meses: mesesFinal, ubicaciones: rankingUbic,
+                nombre, meses: mesesFinal, ubicaciones: metricsUbic,
                 comentarios: { 
                     pos: data.comsPos.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3), 
                     neg: data.comsNeg.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3) 
                 },
-                nubePos: getFreq(data.palabrasPos), nubeNeg: getFreq(data.palabrasNeg),
-                satAnual: mesesConData > 0 ? (sumaSat / mesesConData).toFixed(1) : "0.0",
-                infoHora: { hora: hCritica, porcentaje: porc }
+                nubePos: freq(data.palabrasPos), nubeNeg: freq(data.palabrasNeg),
+                satAnual: mesesConDato > 0 ? (sumaSat / mesesConDato).toFixed(1) : "0.0",
+                infoHora: { hora: hCritica, porcentaje: porcNeg }
             };
         });
 
@@ -151,4 +150,4 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-app.listen(PORT, () => console.log(`Server ON`));
+app.listen(PORT, () => console.log(`Server ON 2025`));
