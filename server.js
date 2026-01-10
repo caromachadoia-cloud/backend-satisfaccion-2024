@@ -12,7 +12,7 @@ app.use(express.json());
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba', 'fueron', 'todo', 'estuvo', 'pueden', 'ser', 'solo', 'tenía', 'nada', 'esto'];
+const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'atencion', 'servicio', 'estos', 'estaba', 'fueron', 'todo', 'estuvo', 'para', 'pero'];
 
 function getWords(text) {
     if (!text || text.length < 5) return [];
@@ -21,6 +21,7 @@ function getWords(text) {
 }
 
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
+    console.log("==> Nueva solicitud recibida");
     try {
         if (!req.file) return res.status(400).json({ success: false, message: 'No se recibió archivo' });
 
@@ -66,7 +67,7 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             const s = sectores[sector];
             const stats = s.meses[date.getMonth()];
 
-            stats.total++; // Cada fila es una respuesta
+            stats.total++;
             if (rating === 4) stats.mp++;
             if (rating === 3) stats.p++;
             if (rating === 2) stats.n++;
@@ -80,13 +81,22 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
         });
 
         const final = Object.entries(sectores).map(([nombre, data]) => {
+            // Unir datos de los inputs manuales con los nombres correctos
             ['enero', 'febrero'].forEach((m, i) => {
-                if (manual[m]) data.meses[i] = manual[m];
+                if (manual[m]) {
+                    data.meses[i] = {
+                        total: manual[m].total || 0,
+                        mp: manual[m].mp || 0,
+                        p: manual[m].p || 0,
+                        n: manual[m].n || 0,
+                        mn: manual[m].mn || 0
+                    };
+                }
             });
 
             const mesesFinal = data.meses.map((m, i) => {
                 const f = m.total / 100;
-                // FORMULA SOLICITADA: (E/(A/100)) - ((B-C)/(A/100))
+                // FORMULA: (MuyPos/f) - ((MuyNeg - Neg)/f)
                 const val = m.total > 0 ? ( (m.mp / f) - ((m.mn - m.n) / f) ).toFixed(1) : 0;
                 return {
                     nombre: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'][i],
@@ -109,8 +119,12 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             };
         });
 
+        console.log("==> Procesamiento terminado con éxito");
         res.json({ success: true, data: { sectores: final } });
-    } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+    } catch (e) {
+        console.error("!! ERROR:", e.message);
+        res.status(500).json({ success: false, message: e.message });
+    }
 });
 
 app.listen(PORT, () => console.log(`Server ON`));
