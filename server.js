@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const cors = require('cors');
-const { Readable } = require('stream'); // Necesario para el streaming
+const { Readable } = require('stream'); 
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -10,11 +10,11 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-// Aumentamos el límite de multer por si acaso, pero mantenemos memoria
+// Configuración para subir archivos grandes
 const storage = multer.memoryStorage();
 const upload = multer({ 
     storage: storage,
-    limits: { fileSize: 50 * 1024 * 1024 } // Límite de 50MB para el archivo subido
+    limits: { fileSize: 50 * 1024 * 1024 } 
 });
 
 // --- UTILIDADES ---
@@ -84,7 +84,7 @@ function convertirRating(valor) {
     return NaN;
 }
 
-// --- PROCESAMIENTO CON STREAMING ---
+// --- PROCESAMIENTO ---
 
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
     try {
@@ -93,13 +93,11 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
         let manual = {};
         try { manual = JSON.parse(req.body.datosManuales || '{}'); } catch(e) {}
 
-        // Convertimos el Buffer a un Stream para leerlo línea por línea
         const stream = new Readable();
         stream.push(req.file.buffer);
         stream.push(null);
 
-        // CONFIGURACIÓN DE ALTO RENDIMIENTO
-        // styles: 'ignore' -> Clave para ahorrar memoria
+        // Streaming para archivos grandes
         const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(stream, {
             styles: 'ignore',
             sharedStrings: 'cache',
@@ -109,21 +107,16 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
         const sectores = {};
         let filasProcesadas = 0;
         
-        // Variables para la detección de columnas
         const colMap = { fecha: null, hora: null, sector: null, ubicacion: null, comentario: null, rating: null };
         let headersFound = false;
         let ratingPriority = 0;
 
-        // Iterar Hoja por Hoja (Solo usaremos la primera)
         for await (const worksheetReader of workbookReader) {
-            
-            // Iterar Fila por Fila (Streaming)
             for await (const row of worksheetReader) {
                 const rowNum = row.number;
 
-                // 1. DETECCIÓN DE COLUMNAS (Solo en las primeras 5 filas)
+                // Detección de columnas
                 if (!headersFound && rowNum <= 5) {
-                    // row.values puede empezar en índice 1
                     row.eachCell((cell, colNumber) => {
                         const val = normalizarTexto(cell.value);
                         
@@ -144,19 +137,16 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                         }
                     });
 
-                    // Si encontramos lo básico, marcamos como encontrado
                     if (colMap.fecha && colMap.rating && ratingPriority >= 2) {
                         headersFound = true;
                         console.log("📍 Mapeo encontrado:", colMap);
-                        continue; // Pasamos a la siguiente fila
+                        continue;
                     }
                 }
 
-                // Si no hemos encontrado headers y pasamos la fila 5, abortamos o intentamos seguir?
-                // Mejor esperar a encontrar headers. Si llegamos a fila 6 sin headers, asumimos error más tarde.
                 if (!headersFound) continue;
 
-                // 2. PROCESAMIENTO DE DATOS
+                // Datos
                 const ratingVal = row.getCell(colMap.rating)?.value;
                 let rating = convertirRating(ratingVal);
                 if (typeof ratingVal === 'object' && ratingVal?.result) rating = convertirRating(ratingVal.result);
@@ -214,23 +204,20 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                     else { s.comsNeg.push(info); s.palabrasNeg.push(...extractWords(comment)); }
                 }
             }
-            
-            // Solo procesamos la primera hoja para ahorrar recursos
             break;
         }
 
-        // Liberamos memoria manualmente
         req.file.buffer = null; 
 
-        console.log(`✅ Procesado con Streaming. Filas OK: ${filasProcesadas}.`);
+        console.log(`✅ Procesado. Filas OK: ${filasProcesadas}.`);
 
         if (filasProcesadas === 0) {
-            return res.json({ success: false, message: `0 filas válidas. Revisa que el Excel tenga las columnas correctas.` });
+            return res.json({ success: false, message: `0 filas válidas.` });
         }
 
-        // 3. Cálculos Finales (Igual que antes)
         const final = Object.entries(sectores).map(([nombre, data]) => {
             
+            // Ajuste datos manuales
             ['enero', 'febrero'].forEach((m, i) => { 
                 if (manual[m] && manual[m].total > 0) {
                     const total = manual[m].total || 0;
@@ -243,17 +230,22 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 }
             });
 
+            // --- CÁLCULO DE SATISFACCIÓN CORREGIDO (Según tu Excel) ---
+            // Fórmula: (Muy Positivas - (Muy Negativas + Negativas)) / Total * 100
             let sumaSat = 0, mesesConDato = 0;
             const mesesFinal = data.meses.map((m) => {
                 let val = 0;
                 if(m.total > 0) {
-                    const positivos = (m.mp || 0) + (m.p || 0);
-                    val = (positivos / m.total) * 100;
+                    // (MP - (MN + N)) / Total * 100
+                    const numerador = (m.mp || 0) - ((m.mn || 0) + (m.n || 0));
+                    val = (numerador / m.total) * 100;
                 }
+                
                 if (m.total > 0) { sumaSat += val; mesesConDato++; }
                 return { sat: parseFloat(val.toFixed(1)), total: m.total };
             });
 
+            // Hora Crítica
             let hCritica = "12:00"; let maxNegVol = -1; let volNegTotal = 0; let totalEnEsaHora = 0;
             data.statsHoras.forEach((h, i) => {
                 if (h.neg > maxNegVol) {
@@ -263,9 +255,11 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             });
             let porcNegCritica = totalEnEsaHora > 0 ? ((volNegTotal / totalEnEsaHora) * 100).toFixed(1) : "0.0";
 
+            // Métricas Ubicación (Misma fórmula corregida)
             const metricsUbic = Object.entries(data.ubicaciones).map(([uNom, uD]) => {
-                const positivos = (uD.mp || 0) + (uD.p || 0);
-                const uSat = uD.total > 0 ? ((positivos / uD.total) * 100).toFixed(1) : "0.0";
+                // (MP - (MN + N)) / Total * 100
+                const numerador = (uD.mp || 0) - ((uD.mn || 0) + (uD.n || 0));
+                const uSat = uD.total > 0 ? ((numerador / uD.total) * 100).toFixed(1) : "0.0";
                 return { nombre: uNom, totalAnual: uD.total, satProm: uSat, promDiario: (uD.total / 365).toFixed(2) };
             }).sort((a,b) => b.totalAnual - a.totalAnual);
 
@@ -282,8 +276,8 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
 
         res.json({ success: true, data: { sectores: final } });
     } catch (e) { 
-        console.error("🔥 Error de Memoria/Proceso:", e);
-        res.status(500).json({ success: false, message: "El archivo es demasiado grande o ocurrió un error. Intenta con un archivo más pequeño si persiste." }); 
+        console.error("🔥 Error:", e);
+        res.status(500).json({ success: false, message: "Error al procesar. Si el archivo es muy grande, intenta dividirlo." }); 
     }
 });
 
