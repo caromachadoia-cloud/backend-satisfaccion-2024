@@ -18,43 +18,32 @@ const normalizarTexto = (t) => {
     return t?.toString().toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
 };
 
-// FUNCIÓN CLAVE: Convierte fechas DD/MM/YYYY a objeto Date real
+// Convierte fechas DD/MM/YYYY o Serial Excel
 function parsearFecha(valor) {
     if (!valor) return null;
-    
-    // 1. Si Excel ya lo detectó como fecha
     if (valor instanceof Date) return valor;
-
-    // 2. Si es texto tipo "18/04/2025" o "18-04-2025"
+    if (typeof valor === 'number') return new Date(Math.round((valor - 25569) * 86400 * 1000));
     if (typeof valor === 'string') {
-        // Eliminar horas si vienen pegadas "18/04/2025 10:00"
-        let soloFecha = valor.split(' ')[0]; 
-        
-        // Detectar separador
+        let soloFecha = valor.split(' ')[0].trim();
         const separador = soloFecha.includes('/') ? '/' : (soloFecha.includes('-') ? '-' : null);
-        
         if (separador) {
             const partes = soloFecha.split(separador);
-            // Asumimos formato DD/MM/YYYY
             if (partes.length === 3) {
                 const dia = parseInt(partes[0]);
-                const mes = parseInt(partes[1]) - 1; // Meses en JS son 0-11
+                const mes = parseInt(partes[1]) - 1;
                 const anio = parseInt(partes[2]);
-                
-                const fechaGenerada = new Date(anio, mes, dia);
-                if (!isNaN(fechaGenerada.getTime())) return fechaGenerada;
+                const fechaGen = new Date(anio, mes, dia);
+                if (!isNaN(fechaGen.getTime())) return fechaGen;
             }
         }
-        // Intento final estándar
         const intento = new Date(valor);
         return isNaN(intento.getTime()) ? null : intento;
     }
-    
     return null;
 }
 
 const CONTEXTO_SECTORES = {
-    "atencion": ["atencion", "trato", "amable", "ayudo", "atenta", "chica", "chico", "resolvio", "espera", "tarjeta", "fun", "stand", "personal", "empleado", "gente", "recepcion"],
+    "atencion": ["atencion", "trato", "amable", "ayudo", "atenta", "chica", "chico", "resolvio", "espera", "tarjeta", "fun", "stand", "personal", "empleado", "gente", "recepcion", "guardarropas"],
     "gastro": ["comida", "mozo", "frio", "caliente", "rico", "bebida", "mesa", "pedido", "tardo", "restaurant", "confiteria", "hamburguesa", "menu", "sabor", "cafe", "barra"],
     "cajas": ["pago", "cobro", "fila", "rapido", "dinero", "efectivo", "tarjeta", "atencion", "espera", "cajero", "ticket", "cobrar", "caja"],
     "traslados": ["chofer", "auto", "camioneta", "viaje", "llego", "tarde", "limpio", "conduccion", "carrito", "transporte", "valet", "bus"],
@@ -64,12 +53,10 @@ const CONTEXTO_SECTORES = {
 const PROHIBIDAS_POR_RUIDO = ["maquina", "paga", "premio", "suerte", "ruleta", "slot", "ganar", "perder", "apuesta", "pozo"];
 
 function esComentarioValido(texto, sector) {
-    if (!texto || texto.toString().length < 5) return false; // Bajé el límite de caracteres
+    if (!texto || texto.toString().length < 4) return false; 
     const limpio = normalizarTexto(texto);
     const sectorKey = Object.keys(CONTEXTO_SECTORES).find(k => normalizarTexto(sector).includes(k)) || "general";
-    
     if (sectorKey !== "general" && PROHIBIDAS_POR_RUIDO.some(p => limpio.includes(p))) return false;
-
     const palabrasContexto = CONTEXTO_SECTORES[sectorKey] || [];
     return palabrasContexto.some(p => limpio.includes(p)) || sectorKey === "general";
 }
@@ -78,6 +65,25 @@ function extractWords(text) {
     const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'porque', 'estaba', 'fui', 'era', 'son', 'fue'];
     return normalizarTexto(text).replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ").match(/[a-z]+/g)
         ?.filter(word => !STOPWORDS.includes(word) && word.length > 3) || [];
+}
+
+// NUEVA FUNCIÓN: Convierte "Muy Positiva" a 4
+function convertirRating(valor) {
+    if (typeof valor === 'number') return valor;
+    if (!valor) return NaN;
+    
+    // Intenta parsear número directo ("4")
+    let num = parseInt(valor);
+    if (!isNaN(num)) return num;
+
+    // Si es texto, buscamos palabras clave
+    const t = normalizarTexto(valor);
+    if (t.includes('muy positiva') || t.includes('excelente')) return 4;
+    if (t.includes('positiva') || t.includes('buena')) return 3;
+    if (t.includes('muy negativa') || t.includes('muy mala') || t.includes('pesima')) return 1;
+    if (t.includes('negativa') || t.includes('mala') || t.includes('regular')) return 2;
+    
+    return NaN;
 }
 
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
@@ -91,12 +97,12 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
         await workbook.xlsx.load(req.file.buffer);
         const worksheet = workbook.worksheets[0];
 
-        console.log(`📂 Procesando hoja: ${worksheet.name}`);
+        console.log(`📂 Hoja: ${worksheet.name} - Filas totales: ${worksheet.rowCount}`);
 
         const colMap = { fecha: null, hora: null, sector: null, ubicacion: null, comentario: null, rating: null };
         let headerRowIndex = 1;
 
-        // 1. BUSCAR ENCABEZADOS (Miramos filas 1 a 5)
+        // 1. Detección de columnas
         for(let r = 1; r <= 5; r++) {
             const row = worksheet.getRow(r);
             row.eachCell((cell, colNumber) => {
@@ -106,7 +112,16 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 if (val.includes('sector')) colMap.sector = colNumber;
                 if (val.includes('ubicacion')) colMap.ubicacion = colNumber;
                 if (val.includes('comentario')) colMap.comentario = colNumber;
-                if (val.includes('calificacion') || val === 'nota' || val.includes('puntos')) colMap.rating = colNumber;
+                
+                // MEJORA: Evita columnas "descripcion" si ya encontró una mejor, pero acepta todo si no hay nada
+                if (val.includes('calificacion') || val === 'nota' || val.includes('puntos')) {
+                    // Si dice "desc", tratamos de evitarla a menos que sea la única
+                    if (!val.includes('desc') && !val.includes('detalle')) {
+                         colMap.rating = colNumber; 
+                    } else if (!colMap.rating) {
+                         colMap.rating = colNumber;
+                    }
+                }
             });
             if (colMap.fecha && colMap.rating) {
                 headerRowIndex = r;
@@ -114,64 +129,60 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             }
         }
 
-        console.log("📍 Columnas detectadas:", colMap);
+        console.log("📍 Mapeo final:", colMap);
 
         if (!colMap.fecha || !colMap.rating) {
-            return res.json({ success: false, message: 'No se encontraron las columnas Fecha y Calificación.' });
+            return res.json({ success: false, message: 'Faltan columnas Fecha o Calificación.' });
         }
 
         const sectores = {};
         let filasProcesadas = 0;
         let filasErrorFecha = 0;
+        let debugFirstRow = true;
 
-        // 2. ITERAR FILAS
+        // 2. Procesamiento
         worksheet.eachRow((row, rowNum) => {
             if (rowNum <= headerRowIndex) return;
 
-            // RATING
             const ratingVal = row.getCell(colMap.rating)?.value;
-            let rating = parseInt(ratingVal);
-            if (typeof ratingVal === 'object' && ratingVal?.result) rating = parseInt(ratingVal.result);
-            if (isNaN(rating)) return;
+            // USAMOS LA NUEVA FUNCIÓN QUE ENTIENDE TEXTO Y NÚMEROS
+            let rating = convertirRating(ratingVal);
+            if (typeof ratingVal === 'object' && ratingVal?.result) rating = convertirRating(ratingVal.result);
 
-            // FECHA (Usamos la nueva función parsearFecha)
+            // Debug para ver por qué falla
+            if (debugFirstRow) {
+                console.log(`🔍 DEBUG FILA 1: FechaRaw: ${row.getCell(colMap.fecha)?.value} | RatingRaw: ${ratingVal} -> Convertido: ${rating}`);
+                debugFirstRow = false;
+            }
+
+            if (isNaN(rating)) return; // Si sigue siendo NaN, saltamos
+
+            // FECHA
             const dateVal = row.getCell(colMap.fecha)?.value;
             let date = parsearFecha(dateVal);
-            
             if (!date) {
                 filasErrorFecha++;
-                // console.log(`Fila ${rowNum} descartada: Fecha inválida (${dateVal})`);
                 return;
             }
             
-            const mIdx = date.getMonth(); // 0-11
+            const mIdx = date.getMonth();
 
             // HORA
-            let horaReal = 12; 
+            let horaReal = 12;
             const hVal = colMap.hora ? row.getCell(colMap.hora)?.value : null;
-            
-            if (hVal instanceof Date) {
-                horaReal = hVal.getHours(); // Si Excel lo detecta como fecha/hora
-            } else if (typeof hVal === 'number') {
-                // Fracción decimal Excel (0.5 = 12hs)
-                horaReal = Math.floor(hVal * 24);
-            } else if (typeof hVal === 'string') {
-                // Formato texto "23:59:55"
+            if (hVal instanceof Date) horaReal = hVal.getHours();
+            else if (typeof hVal === 'number') horaReal = Math.floor(hVal * 24);
+            else if (typeof hVal === 'string') {
                 const partesHora = hVal.trim().split(':');
-                if (partesHora.length >= 1) {
-                    horaReal = parseInt(partesHora[0]);
-                }
+                if (partesHora.length >= 1) horaReal = parseInt(partesHora[0]);
             }
-            // Asegurar límites
-            if (horaReal < 0) horaReal = 0;
-            if (horaReal > 23) horaReal = 23;
+            if (isNaN(horaReal)) horaReal = 12;
+            if (horaReal < 0) horaReal = 0; if (horaReal > 23) horaReal = 23;
 
-            // TEXTOS
             const sectorName = colMap.sector ? (row.getCell(colMap.sector)?.value || 'General').toString().trim() : 'General';
             const ubicName = colMap.ubicacion ? (row.getCell(colMap.ubicacion)?.value || 'General').toString().trim() : 'General';
             const comment = colMap.comentario ? (row.getCell(colMap.comentario)?.value || '').toString().trim() : '';
 
-            // INICIALIZAR ESTRUCTURA
             if (!sectores[sectorName]) {
                 sectores[sectorName] = {
                     meses: Array.from({length: 12}, () => ({ mp:0, p:0, n:0, mn:0, total:0 })),
@@ -185,27 +196,18 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             const s = sectores[sectorName];
             filasProcesadas++;
 
-            // ACUMULAR
             s.meses[mIdx].total++;
             s.statsHoras[horaReal].total++;
 
             if (!s.ubicaciones[ubicName]) s.ubicaciones[ubicName] = { mp:0, p:0, n:0, mn:0, total:0 };
             s.ubicaciones[ubicName].total++;
 
-            // CLASIFICAR
-            if (rating >= 4) { 
-                s.meses[mIdx].mp++; s.ubicaciones[ubicName].mp++; 
-            } else if (rating === 3) { 
-                s.meses[mIdx].p++; s.ubicaciones[ubicName].p++; 
-            } else if (rating === 2) { 
-                s.meses[mIdx].n++; s.ubicaciones[ubicName].n++; 
-                s.statsHoras[horaReal].neg++; 
-            } else if (rating <= 1) { 
-                s.meses[mIdx].mn++; s.ubicaciones[ubicName].mn++; 
-                s.statsHoras[horaReal].neg++; 
-            }
+            // Clasificación (Ahora funciona con 4 o con "Muy Positiva")
+            if (rating >= 4) { s.meses[mIdx].mp++; s.ubicaciones[ubicName].mp++; }
+            else if (rating === 3) { s.meses[mIdx].p++; s.ubicaciones[ubicName].p++; }
+            else if (rating === 2) { s.meses[mIdx].n++; s.ubicaciones[ubicName].n++; s.statsHoras[horaReal].neg++; }
+            else if (rating <= 1) { s.meses[mIdx].mn++; s.ubicaciones[ubicName].mn++; s.statsHoras[horaReal].neg++; }
 
-            // COMENTARIOS
             if (esComentarioValido(comment, sectorName)) {
                 const info = { texto: comment, meta: `${date.getDate()}/${mIdx+1} ${horaReal}:00hs` };
                 if (rating >= 3) { s.comsPos.push(info); s.palabrasPos.push(...extractWords(comment)); }
@@ -213,14 +215,12 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             }
         });
 
-        console.log(`✅ Filas procesadas OK: ${filasProcesadas}`);
-        if(filasErrorFecha > 0) console.log(`⚠️ Filas con fecha inválida: ${filasErrorFecha}`);
+        console.log(`✅ Procesado. Filas OK: ${filasProcesadas}. Errores Fecha: ${filasErrorFecha}`);
 
         if (filasProcesadas === 0) {
-            return res.json({ success: false, message: 'Archivo leído pero sin filas válidas. Probable error en formato de fechas (DD/MM/YYYY) o calificaciones no numéricas.' });
+            return res.json({ success: false, message: `Archivo leído pero 0 filas válidas. Revisa el log del servidor para ver el debug de la primera fila.` });
         }
 
-        // 3. FINALIZAR CÁLCULOS
         const final = Object.entries(sectores).map(([nombre, data]) => {
             ['enero', 'febrero'].forEach((m, i) => { if (manual[m] && manual[m].total > 0) data.meses[i] = manual[m]; });
 
@@ -232,7 +232,6 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 return { sat: parseFloat(val.toFixed(1)), total: m.total };
             });
 
-            // Hora Crítica por Volumen Negativo
             let hCritica = "12:00"; let maxNegVol = -1; let volNegTotal = 0; let totalEnEsaHora = 0;
             data.statsHoras.forEach((h, i) => {
                 if (h.neg > maxNegVol) {
