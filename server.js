@@ -1,110 +1,116 @@
-const API_URL = 'https://backend-satisfaccion.onrender.com/procesar-anual'; 
-const LOGO = 'logo.png'; 
-let datosGlobales = null;
+const express = require('express');
+const multer = require('multer');
+const ExcelJS = require('exceljs');
+const cors = require('cors');
 
-document.addEventListener('DOMContentLoaded', () => {
-    const uploadForm = document.getElementById('uploadForm');
-    const reporteContainer = document.getElementById('reporte-container');
-    const actionsDiv = document.getElementById('actions');
+const app = express();
+const PORT = process.env.PORT || 10000;
 
-    Chart.register(ChartDataLabels);
+app.use(cors());
+app.use(express.json());
 
-    uploadForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        document.getElementById('loader').style.display = 'block';
-        reporteContainer.innerHTML = '';
-        if(actionsDiv) actionsDiv.style.display = 'none';
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
-        const formData = new FormData();
-        formData.append('archivoExcel', document.getElementById('archivoExcel').files[0]);
-        formData.append('datosManuales', JSON.stringify({
-            enero: { 
-                total: parseInt(document.getElementById('ene_total').value)||0,
-                muy_positivas: parseInt(document.getElementById('ene_mp').value)||0,
-                muy_negativas: parseInt(document.getElementById('ene_mn').value)||0,
-                negativas: parseInt(document.getElementById('ene_n').value)||0
-            },
-            febrero: { 
-                total: parseInt(document.getElementById('feb_total').value)||0,
-                muy_positivas: parseInt(document.getElementById('feb_mp').value)||0,
-                muy_negativas: parseInt(document.getElementById('feb_mn').value)||0,
-                negativas: parseInt(document.getElementById('feb_n').value)||0
-            }
-        }));
+const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba', 'fueron', 'todo', 'estuvo', 'pueden', 'ser', 'solo', 'tenía', 'nada', 'esto'];
 
-        try {
-            const response = await fetch(API_URL, { method: 'POST', body: formData });
-            const result = await response.json();
+function getWords(text) {
+    if (!text || text.length < 5) return [];
+    return text.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ").match(/[a-záéíóúñü]+/g)
+        ?.filter(word => !STOPWORDS.includes(word) && word.length > 3) || [];
+}
+
+app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ success: false, message: 'No se recibió archivo' });
+
+        let manual = JSON.parse(req.body.datosManuales || '{}');
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(req.file.buffer);
+        const worksheet = workbook.worksheets[0];
+
+        const colMap = {};
+        worksheet.getRow(1).eachCell((cell, colNumber) => {
+            const val = cell.value?.toString().toLowerCase().trim() || '';
+            if (val.includes('fecha')) colMap.fecha = colNumber;
+            if (val.includes('hora')) colMap.hora = colNumber;
+            if (val.includes('sector')) colMap.sector = colNumber;
+            if (val.includes('comentario')) colMap.comentario = colNumber;
+            if (val.includes('calificacion')) colMap.rating = colNumber;
+        });
+
+        const sectores = {};
+
+        worksheet.eachRow((row, rowNum) => {
+            if (rowNum === 1) return;
+            const rating = parseInt(row.getCell(colMap.rating)?.value);
+            const dateVal = row.getCell(colMap.fecha)?.value;
+            if (!dateVal || isNaN(rating)) return;
+
+            let date = (dateVal instanceof Date) ? dateVal : new Date(dateVal);
+            if (isNaN(date.getTime())) return;
+
+            let hVal = row.getCell(colMap.hora)?.value;
+            let hora = (hVal instanceof Date) ? hVal.getHours() : (typeof hVal === 'number' ? Math.floor(hVal * 24) : 12);
             
-            if (result.success && result.data.sectores.length > 0) {
-                datosGlobales = result.data.sectores;
-                renderizar(datosGlobales);
-                document.getElementById('actions').style.display = 'flex';
-            } else {
-                alert("No se encontraron datos. Verifique que su Excel tenga columnas llamadas: Fecha, Respuestas, Muy Positivas, Muy Negativas y Negativas.");
+            const sector = (row.getCell(colMap.sector)?.value || 'General').toString().trim();
+            const comment = (row.getCell(colMap.comentario)?.value || '').toString().trim();
+
+            if (!sectores[sector]) {
+                sectores[sector] = {
+                    meses: Array.from({length: 12}, () => ({ mp:0, p:0, n:0, mn:0, total:0 })),
+                    comsPos: [], comsNeg: [], palabrasPos: [], palabrasNeg: []
+                };
             }
-        } catch (err) { alert("Error: " + err.message); }
-        finally { document.getElementById('loader').style.display = 'none'; }
-    });
 
-    function renderizar(sectores) {
-        let html = `<div class="page cover-page" style="display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center;">
-            <img src="${LOGO}" style="width:250px; margin-bottom:40px;">
-            <h1 style="font-size:38px; color:#004d40; border:none !important;">ANÁLISIS DE SATISFACCIÓN 2025</h1>
-            <h3>Hipódromo de Palermo</h3>
-            <p>Enero - Diciembre 2025</p>
-        </div>`;
+            const s = sectores[sector];
+            const stats = s.meses[date.getMonth()];
 
-        sectores.forEach((s, idx) => {
-            html += `<div class="page">
-                <div class="header-strip"><h2>${s.nombre} - Satisfacción 2025</h2><img src="${LOGO}"></div>
-                <div class="chart-box" style="height:450px;"><canvas id="chart-${idx}"></canvas></div>
-                <div style="background:#e0f2f1; padding:20px; border-radius:10px; border-left:6px solid #004d40;">
-                    Índice de Satisfacción Anual: <strong>${s.satAnual}</strong>
-                </div>
-            </div>
-            <div class="page">
-                <div class="header-strip"><h2>${s.nombre} - Análisis Cualitativo 2025</h2><img src="${LOGO}"></div>
-                <div class="two-columns">
-                    <div class="card pos"><h4>Puntos Fuertes</h4>${s.comentarios.pos.map(c => `<div class="comment-item"><small>${c.meta}</small><p>"${c.texto}"</p></div>`).join('')}</div>
-                    <div class="card neg"><h4>Oportunidades de Mejora</h4>${s.comentarios.neg.map(c => `<div class="comment-item"><small>${c.meta}</small><p>"${c.texto}"</p></div>`).join('')}</div>
-                </div>
-            </div>`;
+            stats.total++; // Cada fila es una respuesta
+            if (rating === 4) stats.mp++;
+            if (rating === 3) stats.p++;
+            if (rating === 2) stats.n++;
+            if (rating === 1) stats.mn++;
+
+            const info = { texto: comment, meta: `${date.getDate()}/${date.getMonth()+1} ${hora}:00hs` };
+            if (comment.length > 10) {
+                if (rating >= 3) { s.comsPos.push(info); s.palabrasPos.push(...getWords(comment)); }
+                else { s.comsNeg.push(info); s.palabrasNeg.push(...getWords(comment)); }
+            }
         });
 
-        reporteContainer.innerHTML = html;
-
-        setTimeout(() => {
-            sectores.forEach((s, idx) => {
-                const ctx = document.getElementById(`chart-${idx}`);
-                if(!ctx) return;
-                new Chart(ctx, {
-                    data: {
-                        labels: s.meses.map(m => m.nombre),
-                        datasets: [
-                            { type: 'line', label: 'Satisfacción', data: s.meses.map(m => m.sat), borderColor: '#004d40', borderWidth: 3, yAxisID: 'ySat', datalabels: { display: true, align: 'top', font: {weight:'bold'} } },
-                            { type: 'bar', label: 'Volumen', data: s.meses.map(m => m.total), backgroundColor: 'rgba(0,0,0,0.05)', yAxisID: 'yVol', datalabels: { display: false } }
-                        ]
-                    },
-                    options: { responsive: true, maintainAspectRatio: false, scales: { ySat: { min: -100, max: 100 }, yVol: { position: 'right', grid: {drawOnChartArea: false} } } }
-                });
+        const final = Object.entries(sectores).map(([nombre, data]) => {
+            ['enero', 'febrero'].forEach((m, i) => {
+                if (manual[m]) data.meses[i] = manual[m];
             });
-        }, 800);
-    }
 
-    document.getElementById('downloadPptx').addEventListener('click', () => {
-        if(!datosGlobales) return;
-        const pptx = new PptxGenJS();
-        pptx.layout = 'LAYOUT_WIDE';
-        datosGlobales.forEach(s => {
-            let slide = pptx.addSlide();
-            slide.addText(`${s.nombre} - Informe 2025`, { x:0.5, y:0.5, fontSize:22, color:'004d40', bold:true });
-            slide.addText(`Satisfacción Anual: ${s.satAnual}`, { x:0.5, y:1.1, fontSize:14 });
-            slide.addText("Puntos Fuertes", { x:0.5, y:1.8, color:'2e7d32', bold:true });
-            s.comentarios.pos.forEach((c, i) => slide.addText(`- ${c.texto.substring(0,120)}...`, { x:0.5, y:2.3+(i*0.6), fontSize:10 }));
+            const mesesFinal = data.meses.map((m, i) => {
+                const f = m.total / 100;
+                // FORMULA SOLICITADA: (E/(A/100)) - ((B-C)/(A/100))
+                const val = m.total > 0 ? ( (m.mp / f) - ((m.mn - m.n) / f) ).toFixed(1) : 0;
+                return {
+                    nombre: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'][i],
+                    sat: parseFloat(val),
+                    total: m.total
+                };
+            });
+
+            const contar = (arr) => Object.entries(arr.reduce((a,w)=>(a[w]=(a[w]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 25);
+
+            return {
+                nombre, meses: mesesFinal,
+                comentarios: { 
+                    pos: data.comsPos.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3), 
+                    neg: data.comsNeg.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3) 
+                },
+                nubePos: contar(data.palabrasPos),
+                nubeNeg: contar(data.palabrasNeg),
+                satAnual: (mesesFinal.reduce((a, b) => a + b.sat, 0) / 12).toFixed(1)
+            };
         });
-        pptx.writeFile({ fileName: 'Informe_Satisfaccion_2025.pptx' });
-    });
 
-    document.getElementById('downloadPdf').addEventListener('click', () => window.print());
+        res.json({ success: true, data: { sectores: final } });
+    } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
+
+app.listen(PORT, () => console.log(`Server ON`));
