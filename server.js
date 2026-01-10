@@ -39,7 +39,6 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             const dateVal = row.getCell(colMap.fecha)?.value;
             if (!dateVal || isNaN(rating)) return;
 
-            // Extraer hora real
             let hVal = row.getCell(colMap.hora)?.value;
             let horaReal = 12;
             if (hVal instanceof Date) horaReal = hVal.getHours();
@@ -52,9 +51,8 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             if (!sectores[sector]) {
                 sectores[sector] = {
                     meses: Array.from({length: 12}, () => ({ mp:0, p:0, n:0, mn:0, total:0 })),
-                    // Nueva estructura para análisis horario
                     statsHoras: Array.from({length: 24}, () => ({ total: 0, neg: 0 })),
-                    comsPos: [], comsNeg: []
+                    comsPos: [], comsNeg: [], palabrasPos: [], palabrasNeg: []
                 };
             }
 
@@ -62,7 +60,6 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             const statsMes = s.meses[date.getMonth()];
             const statsH = s.statsHoras[horaReal];
 
-            // Acumular datos generales
             statsMes.total++;
             statsH.total++;
 
@@ -83,24 +80,23 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 if (manual[m]) data.meses[i] = manual[m];
             });
 
-            // Calcular Satisfacción por mes
             const mesesFinal = data.meses.map((m) => {
                 const f = m.total / 100;
                 const val = m.total > 0 ? ( (m.mp / f) - ((m.mn + m.n) / f) ).toFixed(1) : 0;
                 return { sat: parseFloat(val), total: m.total };
             });
 
-            // ENCONTRAR HORA CRÍTICA
-            let horaCritica = 0;
+            // Lógica de hora crítica con valor por defecto
+            let horaCritica = "--";
             let maxNegatividad = -1;
             let porcentajeCritico = 0;
 
             data.statsHoras.forEach((h, index) => {
-                if (h.total >= 5) { // Filtro para evitar horas con 1 sola respuesta
+                if (h.total >= 3) { // Bajamos a 3 para capturar más datos
                     const porc = (h.neg / h.total) * 100;
                     if (porc > maxNegatividad) {
                         maxNegatividad = porc;
-                        horaCritica = index;
+                        horaCritica = index.toString().padStart(2, '0') + ':00';
                         porcentajeCritico = porc.toFixed(0);
                     }
                 }
@@ -113,9 +109,11 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                     pos: data.comsPos.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3), 
                     neg: data.comsNeg.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3) 
                 },
+                nubePos: Object.entries(data.palabrasPos.reduce((a,w)=>(a[w]=(a[w]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 25),
+                nubeNeg: Object.entries(data.palabrasNeg.reduce((a,w)=>(a[w]=(a[w]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 25),
                 satAnual: (mesesFinal.reduce((a, b) => a + b.sat, 0) / 12).toFixed(1),
                 infoHora: {
-                    hora: horaCritica.toString().padStart(2, '0') + ':00',
+                    hora: horaCritica,
                     porcentaje: porcentajeCritico
                 }
             };
