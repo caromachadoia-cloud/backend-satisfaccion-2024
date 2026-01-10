@@ -12,7 +12,7 @@ app.use(express.json());
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'atencion', 'servicio', 'estos', 'estaba', 'fueron', 'todo', 'estuvo', 'para', 'pero'];
+const STOPWORDS = ['de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'buen', 'dia', 'tarde', 'noche', 'lugar', 'servicio', 'atencion', 'excelente', 'buena', 'mala', 'regular', 'bien', 'mal', 'hace', 'falta', 'mucha', 'mucho', 'esta', 'estos', 'estaba', 'fueron', 'todo', 'estuvo', 'pueden', 'ser', 'solo', 'tenía', 'nada', 'esto'];
 
 function getWords(text) {
     if (!text || text.length < 5) return [];
@@ -21,7 +21,6 @@ function getWords(text) {
 }
 
 app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
-    console.log("==> Nueva solicitud recibida");
     try {
         if (!req.file) return res.status(400).json({ success: false, message: 'No se recibió archivo' });
 
@@ -33,11 +32,12 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
         const colMap = {};
         worksheet.getRow(1).eachCell((cell, colNumber) => {
             const val = cell.value?.toString().toLowerCase().trim() || '';
-            if (val.includes('fecha')) colMap.fecha = colNumber;
-            if (val.includes('hora')) colMap.hora = colNumber;
-            if (val.includes('sector')) colMap.sector = colNumber;
+            if (val === 'fecha') colMap.fecha = colNumber;
+            if (val === 'hora') colMap.hora = colNumber;
+            if (val === 'sector') colMap.sector = colNumber;
             if (val.includes('comentario')) colMap.comentario = colNumber;
-            if (val.includes('calificacion')) colMap.rating = colNumber;
+            // Solo mapeamos la columna de calificacion numérica (evitamos la descripcion)
+            if (val === 'calificacion') colMap.rating = colNumber;
         });
 
         const sectores = {};
@@ -81,7 +81,6 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
         });
 
         const final = Object.entries(sectores).map(([nombre, data]) => {
-            // Unir datos de los inputs manuales con los nombres correctos
             ['enero', 'febrero'].forEach((m, i) => {
                 if (manual[m]) {
                     data.meses[i] = {
@@ -95,9 +94,9 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             });
 
             const mesesFinal = data.meses.map((m, i) => {
-                const f = m.total / 100;
-                // FORMULA: (MuyPos/f) - ((MuyNeg - Neg)/f)
-                const val = m.total > 0 ? ( (m.mp / f) - ((m.mn - m.n) / f) ).toFixed(1) : 0;
+                const factor = m.total / 100;
+                // FORMULA: (MuyPos - (MuyNeg + Neg)) / (Total/100)
+                const val = m.total > 0 ? ( (m.mp / factor) - ((m.mn + m.n) / factor) ).toFixed(1) : 0;
                 return {
                     nombre: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'][i],
                     sat: parseFloat(val),
@@ -119,10 +118,9 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             };
         });
 
-        console.log("==> Procesamiento terminado con éxito");
         res.json({ success: true, data: { sectores: final } });
     } catch (e) {
-        console.error("!! ERROR:", e.message);
+        console.error(e);
         res.status(500).json({ success: false, message: e.message });
     }
 });
