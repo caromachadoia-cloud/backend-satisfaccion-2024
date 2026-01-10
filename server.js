@@ -22,15 +22,14 @@ const CONTEXTO_SECTORES = {
 };
 
 function esComentarioInteligente(texto, sector) {
-    if (!texto || texto.length < 20) return false;
+    if (!texto || texto.length < 15) return false;
     const limpio = texto.toLowerCase();
-    if (!/[a-z]{4,}/.test(limpio)) return false; // Filtra basura
+    if (!/[a-z]{3,}/.test(limpio)) return false; 
 
     const sectorKey = Object.keys(CONTEXTO_SECTORES).find(k => sector.toLowerCase().includes(k)) || "general";
     const palabrasClave = CONTEXTO_SECTORES[sectorKey];
     
-    // Si es un sector específico, validamos que hable de algo relacionado
-    if (sectorKey !== "baños") {
+    if (sectorKey !== "baños" && sectorKey !== "general") {
         const palabrasProhibidas = ["maquina", "suerte", "paga"].filter(p => !palabrasClave.includes(p));
         if (palabrasProhibidas.some(p => limpio.includes(p))) return false;
     }
@@ -40,7 +39,10 @@ function esComentarioInteligente(texto, sector) {
 const STOPWORDS = ['g','l','de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'ha', 'me', 'si', 'sin', 'sobre', 'muy', 'cuando', 'también', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'uno', 'ni', 'contra', 'ese', 'eso', 'mi', 'qué', 'e', 'son', 'fue', 'gracias', 'hola', 'lugar', 'atencion', 'servicio'];
 
 function getWords(text) {
-    return text.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ").match(/[a-záéíóúñü]+/g)
+    if (!text) return [];
+    return text.toLowerCase()
+        .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ")
+        .match(/[a-záéíóúñü]+/g)
         ?.filter(word => !STOPWORDS.includes(word) && word.length > 3) || [];
 }
 
@@ -72,7 +74,10 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
             if (!dateVal || isNaN(rating)) return;
 
             let hVal = row.getCell(colMap.hora)?.value;
-            let horaReal = (hVal instanceof Date) ? hVal.getHours() : (typeof hVal === 'number' ? Math.floor(hVal * 24) : 12);
+            let horaReal = 12;
+            if (hVal instanceof Date) horaReal = hVal.getHours();
+            else if (typeof hVal === 'number') horaReal = Math.floor(hVal * 24);
+
             let date = (dateVal instanceof Date) ? dateVal : new Date(dateVal);
             const sector = (row.getCell(colMap.sector)?.value || 'General').toString().trim();
             const comment = (row.getCell(colMap.comentario)?.value || '').toString().trim();
@@ -91,11 +96,25 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
 
             statsMes.total++;
             statsH.total++;
-            if (rating === 4) { statsMes.mp++; s.palabrasPos.push(...getWords(comment)); }
-            if (rating === 3) statsMes.p++;
-            if (rating === 2) { statsMes.n++; statsH.neg++; s.palabrasNeg.push(...getWords(comment)); }
-            if (rating === 1) { statsMes.mn++; statsH.neg++; s.palabrasNeg.push(...getWords(comment)); }
 
+            // Clasificación para Nubes y Satisfacción
+            if (rating === 4) { 
+                statsMes.mp++; 
+                s.palabrasPos.push(...getWords(comment)); 
+            } else if (rating === 3) { 
+                statsMes.p++; 
+                s.palabrasPos.push(...getWords(comment)); 
+            } else if (rating === 2) { 
+                statsMes.n++; 
+                statsH.neg++; 
+                s.palabrasNeg.push(...getWords(comment)); 
+            } else if (rating === 1) { 
+                statsMes.mn++; 
+                statsH.neg++; 
+                s.palabrasNeg.push(...getWords(comment)); 
+            }
+
+            // Selección de comentarios inteligentes
             if (esComentarioInteligente(comment, sector)) {
                 const info = { texto: comment, meta: `${date.getDate()}/${date.getMonth()+1} ${horaReal}:00hs` };
                 if (rating >= 3) s.comsPos.push(info);
@@ -106,15 +125,16 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
         const final = Object.entries(sectores).map(([nombre, data]) => {
             ['enero', 'febrero'].forEach((m, i) => { if (manual[m]) data.meses[i] = manual[m]; });
 
-            let sumaSat = 0, mesesData = 0;
+            let sumaSat = 0, mesesConData = 0;
             const mesesFinal = data.meses.map((m) => {
                 const f = m.total / 100;
-                const val = m.total > 0 ? ((m.mp / f) - ((m.mn + m.n) / f)) : 0;
-                if (m.total > 0) { sumaSat += val; mesesData++; }
+                const val = m.total > 0 ? ( (m.mp / f) - ((m.mn + m.n) / f) ) : 0;
+                if (m.total > 0) { sumaSat += val; mesesConData++; }
                 return { sat: parseFloat(val.toFixed(1)), total: m.total };
             });
 
-            let hCritica = "--"; let maxNeg = -1; let porcCritico = 0;
+            // Hora Crítica
+            let hCritica = "12:00"; let maxNeg = -1; let porcCritico = 0;
             data.statsHoras.forEach((h, i) => {
                 if (h.total >= 3) {
                     const p = (h.neg / h.total) * 100;
@@ -122,19 +142,30 @@ app.post('/procesar-anual', upload.single('archivoExcel'), async (req, res) => {
                 }
             });
 
-            const getFreq = (arr) => Object.entries(arr.reduce((a,w)=>(a[w]=(a[w]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0, 25);
+            const getFreq = (arr) => {
+                let counts = {};
+                arr.forEach(w => counts[w] = (counts[w] || 0) + 1);
+                return Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0, 30);
+            };
 
             return {
                 nombre, meses: mesesFinal,
-                comentarios: { pos: data.comsPos.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3), neg: data.comsNeg.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3) },
-                nubePos: getFreq(data.palabrasPos), nubeNeg: getFreq(data.palabrasNeg),
-                satAnual: mesesData > 0 ? (sumaSat / mesesData).toFixed(1) : "0.0",
+                comentarios: { 
+                    pos: data.comsPos.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3), 
+                    neg: data.comsNeg.sort((a,b)=>b.texto.length-a.texto.length).slice(0,3) 
+                },
+                nubePos: getFreq(data.palabrasPos),
+                nubeNeg: getFreq(data.palabrasNeg),
+                satAnual: mesesConData > 0 ? (sumaSat / mesesConData).toFixed(1) : "0.0",
                 infoHora: { hora: hCritica, porcentaje: porcCritico }
             };
         });
 
         res.json({ success: true, data: { sectores: final } });
-    } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+    } catch (e) { 
+        console.error(e);
+        res.status(500).json({ success: false, message: e.message }); 
+    }
 });
 
-app.listen(PORT, () => console.log(`Server ON`));
+app.listen(PORT, () => console.log(`Server ON en puerto ${PORT}`));
